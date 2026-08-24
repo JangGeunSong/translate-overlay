@@ -1,10 +1,27 @@
-import type { InterpretationContext, TextRegion, TranslationResult } from "../types";
+import type { InterpretationContext, ProviderStatus, TextRegion, TranslationResult } from "../types";
 
 const ROOT_ATTRIBUTE = "data-context-reader-root";
 
 interface SurfaceEntry {
   region: TextRegion;
   element: HTMLDivElement;
+  renderedKey?: string;
+}
+
+export interface OverlayReconcileStats {
+  created: number;
+  disposed: number;
+  reused: number;
+}
+
+export interface SurfaceDiagnostic {
+  id: string;
+  sourceKey: string;
+  hidden: boolean;
+  height: string;
+  maxHeight: string;
+  fontSize: string;
+  compact: boolean;
 }
 
 export class OverlayRenderer {
@@ -13,6 +30,7 @@ export class OverlayRenderer {
   private readonly surfaceLayer: HTMLDivElement;
   private readonly controlLayer: HTMLDivElement;
   private readonly surfaces = new Map<string, SurfaceEntry>();
+  private readonly statusLabel: HTMLSpanElement;
   private showingOriginal = false;
   private selectionAction?: HTMLButtonElement;
   private explanation?: HTMLDivElement;
@@ -28,7 +46,9 @@ export class OverlayRenderer {
     this.controlLayer = document.createElement("div");
     this.controlLayer.className = "control-layer";
     this.shadow.append(this.surfaceLayer, this.controlLayer);
-    this.controlLayer.append(this.createToolbar(onToggleOriginal));
+    const toolbar = this.createToolbar(onToggleOriginal);
+    this.statusLabel = toolbar.querySelector(".provider-status") as HTMLSpanElement;
+    this.controlLayer.append(toolbar);
     document.documentElement.append(this.host);
   }
 
@@ -36,18 +56,22 @@ export class OverlayRenderer {
     return `
       :host { all: initial; }
       .surface-layer, .control-layer { position: fixed; inset: 0; pointer-events: none; }
+      .surface-layer { overflow: hidden; }
       .translation-surface {
         position: absolute; box-sizing: border-box; overflow: hidden; padding: 1px 2px;
         background: color-mix(in srgb, Canvas 96%, transparent); color: CanvasText;
-        white-space: normal; overflow-wrap: anywhere; border-radius: 2px;
+        white-space: normal; overflow-wrap: anywhere; word-break: keep-all; border-radius: 2px;
         pointer-events: none; contain: layout paint style;
       }
+      .translation-surface.compact { white-space: nowrap; text-overflow: ellipsis; }
+      .translation-surface.demo { outline: 1px dotted color-mix(in srgb, CanvasText 28%, transparent); }
       .toolbar {
         position: fixed; top: 12px; right: 12px; display: flex; align-items: center; gap: 8px;
         max-width: min(360px, calc(100vw - 24px)); padding: 7px 9px; border: 1px solid #d7dbe2;
         border-radius: 999px; background: #fff; color: #17202a; box-shadow: 0 3px 16px #0002;
         font: 12px/1.2 system-ui, sans-serif; pointer-events: auto;
       }
+      .provider-status { color: #657080; }
       button { border: 0; border-radius: 999px; padding: 6px 9px; cursor: pointer; font: inherit; }
       .toggle { background: #eaf0ff; color: #173b78; }
       .selection-action {
@@ -77,6 +101,9 @@ export class OverlayRenderer {
     toolbar.className = "toolbar";
     const label = document.createElement("span");
     label.textContent = "읽기 레이어 켜짐";
+    const providerStatus = document.createElement("span");
+    providerStatus.className = "provider-status";
+    providerStatus.textContent = "번역 기능 확인 중";
     const toggle = document.createElement("button");
     toggle.className = "toggle";
     toggle.textContent = "원문 보기";
@@ -86,16 +113,26 @@ export class OverlayRenderer {
       toggle.textContent = this.showingOriginal ? "번역 보기" : "원문 보기";
       onToggleOriginal(this.showingOriginal);
     });
-    toolbar.append(label, toggle);
+    toolbar.append(label, providerStatus, toggle);
     return toolbar;
   }
 
-  reconcile(regions: TextRegion[], translations: ReadonlyMap<string, TranslationResult>): void {
+  setProviderStatus(status: ProviderStatus): void {
+    if (status.capability !== "translation") return;
+    this.statusLabel.textContent = status.message;
+    this.statusLabel.dataset.mode = status.mode;
+    this.statusLabel.dataset.state = status.state;
+    this.statusLabel.title = status.progress === undefined ? status.message : `${status.message} ${status.progress}%`;
+  }
+
+  reconcile(regions: TextRegion[], translations: ReadonlyMap<string, TranslationResult>): OverlayReconcileStats {
+    const stats: OverlayReconcileStats = { created: 0, disposed: 0, reused: 0 };
     const liveIds = new Set(regions.map((region) => region.id));
     for (const [id, entry] of this.surfaces) {
       if (!liveIds.has(id) || !entry.region.element.isConnected) {
         entry.element.remove();
         this.surfaces.delete(id);
+        stats.disposed += 1;
       }
     }
     for (const region of regions) {
@@ -107,13 +144,24 @@ export class OverlayRenderer {
         this.surfaceLayer.append(element);
         entry = { region, element };
         this.surfaces.set(region.id, entry);
+        stats.created += 1;
+      } else {
+        stats.reused += 1;
       }
       entry.region = region;
       const result = translations.get(region.id);
-      entry.element.textContent = result?.translatedText ?? "해석 중…";
+      const renderedKey = result?.requestKey ?? `pending:${region.sourceKey}`;
+      if (entry.renderedKey !== renderedKey) {
+        entry.element.textContent = result?.translatedText ?? "해석 중…";
+        entry.renderedKey = renderedKey;
+      }
+      entry.element.dataset.sourceKey = region.sourceKey;
+      entry.element.dataset.sourceText = region.text;
+      entry.element.classList.toggle("demo", result?.provider === "deterministic-demo");
       entry.element.title = result ? `${result.provider} · 원문은 상단 버튼으로 확인` : "번역 준비 중";
       this.position(entry);
     }
+    return stats;
   }
 
   reposition(): void {
@@ -121,18 +169,34 @@ export class OverlayRenderer {
   }
 
   private position(entry: SurfaceEntry): void {
+    if (!entry.region.element.isConnected) {
+      entry.element.hidden = true;
+      return;
+    }
     const rect = entry.region.element.getBoundingClientRect();
     const style = getComputedStyle(entry.region.element);
-    const visible = rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth;
+    const cssVisible = style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
+    const browserVisible = typeof entry.region.element.checkVisibility !== "function" || entry.region.element.checkVisibility({
+      checkOpacity: true,
+      checkVisibilityCSS: true,
+    });
+    const visible = cssVisible && browserVisible && rect.width > 1 && rect.height > 1 &&
+      rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth;
     entry.element.hidden = !visible;
     if (!visible) return;
+    const sourceFontSize = Number.parseFloat(style.fontSize) || 16;
+    const translatedLength = entry.element.textContent?.length ?? 0;
+    const density = translatedLength / Math.max(1, entry.region.text.length);
+    const fontScale = density > 1.35 ? Math.max(0.78, 1 / Math.sqrt(density)) : 1;
+    const compact = rect.height < 22 || rect.width < 90;
+    entry.element.classList.toggle("compact", compact);
     Object.assign(entry.element.style, {
       transform: `translate(${Math.round(rect.left)}px, ${Math.round(rect.top)}px)`,
       width: `${Math.max(1, Math.round(rect.width))}px`,
-      minHeight: `${Math.max(1, Math.round(rect.height))}px`,
-      maxHeight: `${Math.max(24, Math.round(rect.height * 1.8))}px`,
+      height: `${Math.max(1, Math.round(rect.height))}px`,
+      maxHeight: `${Math.max(1, Math.round(rect.height))}px`,
       fontFamily: style.fontFamily,
-      fontSize: style.fontSize,
+      fontSize: `${Math.max(10, sourceFontSize * fontScale)}px`,
       fontWeight: style.fontWeight,
       lineHeight: style.lineHeight,
       textAlign: style.textAlign,
@@ -151,7 +215,7 @@ export class OverlayRenderer {
     this.selectionAction = button;
   }
 
-  showExplanation(context: InterpretationContext, text: string, loading = false): void {
+  showExplanation(context: InterpretationContext, text: string, loading = false, provider?: string): void {
     this.selectionAction?.remove();
     this.explanation?.remove();
     const popover = document.createElement("div");
@@ -170,7 +234,7 @@ export class OverlayRenderer {
     body.textContent = text;
     const contextLine = document.createElement("div");
     contextLine.className = "context";
-    contextLine.textContent = `선택: ${context.selectedText}`;
+    contextLine.textContent = `선택: ${context.selectedText}${provider ? ` · ${provider}` : ""}`;
     popover.append(header, body, contextLine);
     this.controlLayer.append(popover);
     this.explanation = popover;
@@ -179,6 +243,18 @@ export class OverlayRenderer {
   clearSelectionUi(): void {
     this.selectionAction?.remove();
     this.selectionAction = undefined;
+  }
+
+  getSurfaceDiagnostics(): SurfaceDiagnostic[] {
+    return [...this.surfaces.entries()].map(([id, entry]) => ({
+      id,
+      sourceKey: entry.region.sourceKey,
+      hidden: entry.element.hidden,
+      height: entry.element.style.height,
+      maxHeight: entry.element.style.maxHeight,
+      fontSize: entry.element.style.fontSize,
+      compact: entry.element.classList.contains("compact"),
+    }));
   }
 
   dispose(): void {

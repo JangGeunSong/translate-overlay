@@ -1,5 +1,5 @@
-import type { InterpretationContext, InterpretationResult, TranslationRequest, TranslationResult } from "../types";
-import type { LinguisticProvider } from "./provider";
+import type { InterpretationContext, InterpretationResult, ProviderStatus, TranslationRequest, TranslationResult } from "../types";
+import { ProviderStatusEmitter, type LinguisticProvider } from "./provider";
 
 const PHRASES: Array<[RegExp, string]> = [
   [/The proposal was eventually shelved due to mounting regulatory pressure\.?/giu, "이 제안은 규제 압력이 커지면서 결국 보류되었습니다."],
@@ -36,16 +36,35 @@ function demoTranslate(text: string): string {
 
 export class DemoProvider implements LinguisticProvider {
   readonly name = "deterministic-demo";
+  readonly mode = "development-demo" as const;
+  private readonly statuses = new ProviderStatusEmitter();
+
+  subscribeStatus(listener: (status: ProviderStatus) => void): () => void {
+    return this.statuses.subscribe(listener);
+  }
 
   async translate(requests: TranslationRequest[]): Promise<TranslationResult[]> {
+    this.statuses.emit({
+      capability: "translation",
+      mode: this.mode,
+      state: "fallback",
+      message: "개발용 번역 사용 중 (제한됨)",
+    });
     return requests.map((request) => ({
       regionId: request.regionId,
+      requestKey: request.requestKey,
       translatedText: demoTranslate(request.text),
       provider: this.name,
     }));
   }
 
   async interpret(context: InterpretationContext): Promise<InterpretationResult> {
+    this.statuses.emit({
+      capability: "interpretation",
+      mode: this.mode,
+      state: "fallback",
+      message: "개발용 문맥 해석 사용 중 (제한됨)",
+    });
     const selected = context.selectedText;
     const shelved = /shelved/i.test(selected) || /shelved/i.test(context.sentence);
     const explanation = shelved

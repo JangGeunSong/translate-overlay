@@ -2,24 +2,69 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Context Reader smoke fixture</title>
+    <title>Context Reader dynamic regression fixture</title>
     <style>
-      body { max-width: 700px; margin: 80px auto; font: 18px/1.55 system-ui; }
-      .spacer { height: 900px; }
+      body { max-width: 760px; margin: 80px auto; font: 18px/1.55 system-ui; }
+      section { margin: 32px 0; padding: 16px; border: 1px solid #ddd; }
+      .is-hidden { display: none; }
+      .spacer { height: 800px; }
     </style>
   </head>
   <body>
     <main id="source">
-      <h1>Welcome to the example website</h1>
-      <p>The proposal was eventually shelved due to mounting regulatory pressure.</p>
-      <button id="continue">Continue reading</button>
+      <article id="article">
+        <h1>Article documentation guide</h1>
+        <p>The proposal was eventually shelved due to mounting regulatory pressure.</p>
+        <div id="delayed-article"></div>
+      </article>
+      <section id="commerce">
+        <h2>Subscription plans</h2>
+        <p id="plan-state">Plan A costs $90 per month.</p>
+        <button id="change-plan">Choose Plan B</button>
+        <p id="conditional">This option is currently visible.</p>
+        <button id="toggle-conditional">Toggle conditional option</button>
+        <p id="removable">This temporary offer can be removed.</p>
+        <button id="remove-offer">Remove temporary offer</button>
+        <p id="rapid-state">Rapid initial state.</p>
+        <button id="rapid-mutations">Run rapid mutations</button>
+        <button id="interaction-check">Verify page interaction</button>
+      </section>
+      <section id="spa-view">
+        <h2>SPA home route</h2>
+        <p>Current client-side route is home.</p>
+        <button id="navigate-spa">Navigate in application</button>
+      </section>
       <div class="spacer"></div>
-      <p>Learn more about this dynamic page.</p>
     </main>
     <script>
       window.initialSourceMarkup = document.querySelector("#source").outerHTML;
-      document.querySelector("#continue").addEventListener("click", () => {
+      setTimeout(() => {
+        document.querySelector("#delayed-article").innerHTML = "<p>Delayed article content is now available.</p>";
+      }, 80);
+      document.querySelector("#change-plan").addEventListener("click", () => {
+        document.querySelector("#plan-state").textContent = "Plan B costs $120 per month.";
+      });
+      document.querySelector("#toggle-conditional").addEventListener("click", () => {
+        document.querySelector("#conditional").classList.toggle("is-hidden");
+      });
+      document.querySelector("#remove-offer").addEventListener("click", () => {
+        document.querySelector("#removable")?.remove();
+      });
+      document.querySelector("#rapid-mutations").addEventListener("click", () => {
+        const target = document.querySelector("#rapid-state");
+        for (let index = 0; index < 25; index += 1) target.textContent = `Rapid intermediate state ${index}.`;
+        target.textContent = "Rapid final state.";
+      });
+      document.querySelector("#interaction-check").addEventListener("click", () => {
         document.body.dataset.buttonWorked = "true";
+      });
+      document.querySelector("#navigate-spa").addEventListener("click", () => {
+        history.pushState({ route: "details" }, "", "/details");
+        document.querySelector("#spa-view").innerHTML = `
+          <h2>SPA details route</h2>
+          <p>Current client-side route is details.</p>
+          <button id="spa-back">Return to home route</button>`;
+        document.querySelector("#spa-back").addEventListener("click", () => history.back());
       });
     </script>
   </body>

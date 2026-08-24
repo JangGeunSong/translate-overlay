@@ -21,4 +21,18 @@ describe("PageAnalyzer", () => {
     expect(regions.every((region) => !region.text.includes("Extension-owned"))).toBe(true);
     expect(regions.length).toBeLessThanOrEqual(10);
   });
+
+  it("keeps logical identity for a live element while invalidating changed source text", () => {
+    const analyzer = new PageAnalyzer();
+    const element = document.querySelector("#visible")!;
+    const before = analyzer.analyze().find((region) => region.element === element)!;
+    element.parentElement!.insertBefore(document.createElement("p"), element);
+    const afterMove = analyzer.analyze().find((region) => region.element === element)!;
+    expect(afterMove.id).toBe(before.id);
+    expect(afterMove.sourceKey).toBe(before.sourceKey);
+    element.textContent = "This readable website paragraph changed.";
+    const afterText = analyzer.analyze().find((region) => region.element === element)!;
+    expect(afterText.id).toBe(before.id);
+    expect(afterText.sourceKey).not.toBe(before.sourceKey);
+  });
 });

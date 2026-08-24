@@ -5,9 +5,9 @@ describe("deterministic demo provider", () => {
   it("preserves request identities and returns Korean demo text", async () => {
     const provider = new DemoProvider();
     const [result] = await provider.translate([
-      { regionId: "r1", text: "Welcome to this website", sourceLanguage: "en", targetLanguage: "ko" },
+      { regionId: "r1", requestKey: "request-1", text: "Welcome to this website", sourceLanguage: "en", targetLanguage: "ko" },
     ]);
-    expect(result).toMatchObject({ regionId: "r1", provider: "deterministic-demo" });
+    expect(result).toMatchObject({ regionId: "r1", requestKey: "request-1", provider: "deterministic-demo" });
     expect(result!.translatedText).toContain("환영합니다");
   });
 

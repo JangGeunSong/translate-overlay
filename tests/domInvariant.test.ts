@@ -18,10 +18,10 @@ describe("non-destructive overlay invariant", () => {
     const renderer = new OverlayRenderer(() => undefined);
     renderer.reconcile(
       [{
-        id: "r1", element: paragraph, text: "Welcome reader", language: "en",
+        id: "r1", sourceKey: "source-1", element: paragraph, text: "Welcome reader", language: "en",
         rect: paragraph.getBoundingClientRect(),
       }],
-      new Map([["r1", { regionId: "r1", translatedText: "독자 여러분 환영합니다", provider: "test" }]]),
+      new Map([["r1", { regionId: "r1", requestKey: "request-1", translatedText: "독자 여러분 환영합니다", provider: "test" }]]),
     );
 
     expect(source.outerHTML).toBe(before);
@@ -41,10 +41,31 @@ describe("non-destructive overlay invariant", () => {
   it("does not duplicate surfaces when the same region is reconciled", () => {
     const paragraph = document.querySelector("p")!;
     const renderer = new OverlayRenderer(() => undefined);
-    const region = { id: "stable", element: paragraph, text: "Welcome reader", language: "en" as const, rect: paragraph.getBoundingClientRect() };
+    const region = { id: "stable", sourceKey: "stable-source", element: paragraph, text: "Welcome reader", language: "en" as const, rect: paragraph.getBoundingClientRect() };
     renderer.reconcile([region], new Map());
     renderer.reconcile([region], new Map());
     expect(document.querySelectorAll(overlayRootSelector)).toHaveLength(1);
+    renderer.dispose();
+  });
+
+  it("bounds a long translation to the source rectangle", () => {
+    const paragraph = document.querySelector("p")!;
+    const renderer = new OverlayRenderer(() => undefined);
+    const region = { id: "long", sourceKey: "long-source", element: paragraph, text: "Short source", language: "en" as const, rect: paragraph.getBoundingClientRect() };
+    renderer.reconcile(
+      [region],
+      new Map([["long", {
+        regionId: "long",
+        requestKey: "long-request",
+        translatedText: "매우 긴 번역문 ".repeat(60),
+        provider: "test",
+      }]]),
+    );
+    expect(renderer.getSurfaceDiagnostics()[0]).toMatchObject({
+      height: "40px",
+      maxHeight: "40px",
+      hidden: false,
+    });
     renderer.dispose();
   });
 });

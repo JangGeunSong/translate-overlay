@@ -3,11 +3,16 @@ import { PageAnalyzer } from "./analysis/pageAnalyzer";
 import { BuiltInTranslatorProvider } from "./providers/builtInTranslatorProvider";
 import { DemoProvider } from "./providers/demoProvider";
 import { ProviderChain } from "./providers/provider";
+import { RemoteInterpretationProvider } from "./providers/remoteInterpretationProvider";
 import { ReaderController } from "./readerController";
 
 const controller = new ReaderController(
   new PageAnalyzer(),
-  new ProviderChain([new BuiltInTranslatorProvider(), new DemoProvider()]),
+  new ProviderChain([
+    new BuiltInTranslatorProvider(),
+    new RemoteInterpretationProvider(),
+    new DemoProvider(),
+  ]),
 );
 
 chrome.runtime.onMessage.addListener((message: ReaderMessage) => {

@@ -49,6 +49,13 @@ export function isLikelyReadableText(text: string): boolean {
 
 export function isElementVisible(element: Element): boolean {
   const html = element as HTMLElement;
+  if (!html.isConnected || isExcludedElement(html)) return false;
+  if (typeof html.checkVisibility === "function" && !html.checkVisibility({
+    checkOpacity: true,
+    checkVisibilityCSS: true,
+  })) {
+    return false;
+  }
   const style = getComputedStyle(html);
   if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
     return false;
@@ -89,6 +96,18 @@ export function elementPath(element: Element): string {
   return segments.reverse().join("/");
 }
 
-export function createRegionId(element: Element, text: string): string {
-  return `region-${hashString(`${elementPath(element)}|${normalizeText(text)}`)}`;
+export function createRegionId(element: Element): string {
+  return `region-${hashString(elementPath(element))}`;
+}
+
+export function createSourceKey(text: string, language: SourceLanguage): string {
+  return hashString(`${language}|${normalizeText(text)}`);
+}
+
+export function createTranslationRequestKey(
+  text: string,
+  sourceLanguage: SourceLanguage,
+  targetLanguage: string,
+): string {
+  return hashString(`${sourceLanguage}|${targetLanguage}|${normalizeText(text)}`);
 }

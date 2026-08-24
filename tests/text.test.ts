@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   createRegionId,
+  createSourceKey,
+  createTranslationRequestKey,
   detectSourceLanguage,
   isLikelyReadableText,
   normalizeText,
@@ -30,8 +32,10 @@ describe("text analysis", () => {
   it("creates stable, path-sensitive region identities", () => {
     document.body.innerHTML = "<main><p>Hello world</p><p>Hello world</p></main>";
     const [first, second] = [...document.querySelectorAll("p")];
-    expect(createRegionId(first!, "Hello world")).toBe(createRegionId(first!, "Hello world"));
-    expect(createRegionId(first!, "Hello world")).not.toBe(createRegionId(second!, "Hello world"));
-    expect(createRegionId(first!, "Changed")).not.toBe(createRegionId(first!, "Hello world"));
+    expect(createRegionId(first!)).toBe(createRegionId(first!));
+    expect(createRegionId(first!)).not.toBe(createRegionId(second!));
+    expect(createSourceKey("Changed", "en")).not.toBe(createSourceKey("Hello world", "en"));
+    expect(createTranslationRequestKey("Hello world", "en", "ko"))
+      .toBe(createTranslationRequestKey("  Hello   world ", "en", "ko"));
   });
 });

@@ -93,6 +93,45 @@ async function waitForExtensionWorker(targetsUrl) {
   throw new Error("Timed out waiting for the Context Reader Overlay service worker.");
 }
 
+async function waitForCondition(read, predicate, description, attempts = 40) {
+  let lastValue;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const value = await read();
+    lastValue = value;
+    if (predicate(value)) return value;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for ${description}. Last value: ${JSON.stringify(lastValue)}`);
+}
+
+async function getSurfaceSources(page) {
+  const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  return flattened.nodes.flatMap((node) => {
+    const attributes = node.attributes ?? [];
+    const classIndex = attributes.indexOf("class");
+    if (classIndex < 0 || !attributes[classIndex + 1]?.includes("translation-surface")) return [];
+    const sourceIndex = attributes.indexOf("data-source-text");
+    return sourceIndex < 0 ? [] : [attributes[sourceIndex + 1]];
+  });
+}
+
+async function getProviderStatus(page) {
+  const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  const node = flattened.nodes.find((candidate) => {
+    const attributes = candidate.attributes ?? [];
+    const classIndex = attributes.indexOf("class");
+    return classIndex >= 0 && attributes[classIndex + 1]?.includes("provider-status");
+  });
+  if (!node) return undefined;
+  const attributes = node.attributes ?? [];
+  const modeIndex = attributes.indexOf("data-mode");
+  const stateIndex = attributes.indexOf("data-state");
+  return {
+    mode: modeIndex < 0 ? undefined : attributes[modeIndex + 1],
+    state: stateIndex < 0 ? undefined : attributes[stateIndex + 1],
+  };
+}
+
 const fixture = await readFile("test-pages/fixture.html");
 const server = createServer((_request, response) => {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -134,12 +173,22 @@ try {
   const tabId = await evaluate(worker, `chrome.tabs.query({}).then(tabs => tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)})?.id)`);
   if (!tabId) throw new Error("Fixture tab was not visible to the extension service worker.");
   const setReader = (enabled) => evaluate(worker, `chrome.tabs.sendMessage(${tabId}, {type:"SET_READER_ENABLED", enabled:${enabled}})`);
-  await setReader(true);
+  await waitForCondition(
+    () => evaluate(page, `document.querySelector("#delayed-article").textContent`),
+    (text) => text.includes("Delayed article content"),
+    "fixture delayed article insertion",
+  );
+  await evaluate(page, `window.sourceBeforeReader = document.querySelector("#source").outerHTML`);
+  await waitForCondition(
+    () => setReader(true).then(() => true).catch(() => false),
+    (connected) => connected,
+    "content script message receiver",
+  );
   await delay(500);
 
   const enabledState = await evaluate(page, `({
     roots: document.querySelectorAll("[data-context-reader-root]").length,
-    sourceUntouched: document.querySelector("#source").outerHTML === window.initialSourceMarkup
+    sourceUntouched: document.querySelector("#source").outerHTML === window.sourceBeforeReader
   })`);
   if (enabledState.roots !== 1 || !enabledState.sourceUntouched) throw new Error(`Enable invariant failed: ${JSON.stringify(enabledState)}`);
   await page.send("DOM.enable");
@@ -151,14 +200,85 @@ try {
   if (!translatedSurface) throw new Error("No translated surface was rendered inside the isolated root.");
   const translatedText = flattened.nodes.find((node) => node.parentId === translatedSurface.nodeId && node.nodeName === "#text")?.nodeValue;
   if (!translatedText) throw new Error("Translated surface did not contain presentation text.");
+  const providerStatus = await waitForCondition(
+    () => getProviderStatus(page),
+    (status) => status?.state === "ready" || status?.state === "fallback",
+    "visible translation provider capability state",
+  );
+  if (!["browser-translator", "development-demo"].includes(providerStatus.mode)) {
+    throw new Error(`Unexpected translation provider mode: ${JSON.stringify(providerStatus)}`);
+  }
 
-  const interactionWorked = await evaluate(page, `document.querySelector("#continue").click(); document.body.dataset.buttonWorked`);
+  const initialSources = await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("Plan A costs $90 per month.") && sources.includes("Delayed article content is now available."),
+    "initial article and subscription surfaces",
+  );
+  if (!initialSources.includes("Article documentation guide")) throw new Error("Article heading was not represented.");
+
+  await evaluate(page, `document.querySelector("#change-plan").click()`);
+  const replacedSources = await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("Plan B costs $120 per month."),
+    "Plan B replacement surface",
+  );
+  if (replacedSources.includes("Plan A costs $90 per month.")) throw new Error("Stale Plan A overlay remained after replacement.");
+  if (new Set(replacedSources).size !== replacedSources.length) throw new Error("Duplicate overlays appeared after replacement.");
+
+  await evaluate(page, `document.querySelector("#toggle-conditional").click()`);
+  await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => !sources.includes("This option is currently visible."),
+    "hidden region disposal",
+  );
+  await evaluate(page, `document.querySelector("#toggle-conditional").click()`);
+  await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("This option is currently visible."),
+    "hidden region restoration",
+  );
+
+  await evaluate(page, `document.querySelector("#remove-offer").click()`);
+  await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => !sources.includes("This temporary offer can be removed."),
+    "removed region disposal",
+  );
+
+  await evaluate(page, `document.querySelector("#rapid-mutations").click()`);
+  const rapidSources = await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("Rapid final state."),
+    "rapid mutation convergence",
+  );
+  if (rapidSources.some((source) => source.includes("Rapid intermediate")) || rapidSources.includes("Rapid initial state.")) {
+    throw new Error("Rapid mutations left stale surfaces.");
+  }
+
+  await evaluate(page, `document.querySelector("#spa-view").scrollIntoView({block:"center"}); document.querySelector("#navigate-spa").click()`);
+  const spaSources = await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("SPA details route") && sources.includes("Current client-side route is details."),
+    "SPA route replacement",
+  );
+  if (spaSources.includes("SPA home route") || spaSources.includes("Current client-side route is home.")) {
+    throw new Error("SPA navigation left stale route overlays.");
+  }
+
+  const interactionWorked = await evaluate(page, `document.querySelector("#interaction-check").click(); document.body.dataset.buttonWorked`);
   if (interactionWorked !== "true") throw new Error("Underlying page button did not work.");
   await evaluate(page, "scrollTo(0, document.body.scrollHeight)");
   await delay(300);
   if (await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 1) {
     throw new Error("Overlay host was lost after scrolling.");
   }
+
+  await evaluate(page, `document.querySelector("#spa-view").scrollIntoView({block:"center"})`);
+  await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("SPA details route"),
+    "current SPA route before reader lifecycle test",
+  );
 
   await setReader(false);
   await delay(100);
@@ -170,10 +290,18 @@ try {
   if (await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 1) {
     throw new Error("Re-enable duplicated or failed to create the overlay host.");
   }
+  const reenabledSources = await waitForCondition(
+    () => getSurfaceSources(page),
+    (sources) => sources.includes("SPA details route"),
+    "current SPA content after re-enable",
+  );
+  if (reenabledSources.some((source) => source.includes("Plan A") || source.includes("Rapid intermediate") || source.includes("SPA home"))) {
+    throw new Error("Re-enable resurrected stale overlays.");
+  }
 
   page.close();
   worker.close();
-  console.log("Browser smoke passed: enable, source invariant, page interaction, scroll, cleanup, and re-enable.");
+  console.log("Browser regression passed: article insertion, dynamic replacement, hide/show, removal, rapid mutations, SPA navigation, interaction, scroll, cleanup, and re-enable.");
 } finally {
   if (browser) {
     try { await browser.send("Browser.close"); } catch {}
