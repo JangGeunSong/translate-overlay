@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Context Reader Overlay",
+  "description": "Read foreign-language pages through a non-destructive Korean interpretation layer.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "tabs"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "읽기 레이어 켜기/끄기"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

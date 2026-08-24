@@ -1,0 +1,50 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { OverlayRenderer, overlayRootSelector } from "../src/content/overlay/overlayRenderer";
+
+describe("non-destructive overlay invariant", () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<main id="source"><p><a href="#worked">Welcome reader</a></p><button>Continue</button></main>';
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 10, y: 20, top: 20, left: 10, right: 310, bottom: 60, width: 300, height: 40,
+      toJSON: () => ({}),
+    } as DOMRect);
+  });
+
+  it("adds only its isolated host, leaves source markup intact, and cleans up", () => {
+    const source = document.querySelector("#source") as HTMLElement;
+    const paragraph = source.querySelector("p")!;
+    const before = source.outerHTML;
+    const renderer = new OverlayRenderer(() => undefined);
+    renderer.reconcile(
+      [{
+        id: "r1", element: paragraph, text: "Welcome reader", language: "en",
+        rect: paragraph.getBoundingClientRect(),
+      }],
+      new Map([["r1", { regionId: "r1", translatedText: "독자 여러분 환영합니다", provider: "test" }]]),
+    );
+
+    expect(source.outerHTML).toBe(before);
+    expect(document.querySelectorAll(overlayRootSelector)).toHaveLength(1);
+    expect((document.querySelector(overlayRootSelector) as HTMLElement).style.pointerEvents).toBe("none");
+
+    const handler = vi.fn();
+    source.querySelector("button")!.addEventListener("click", handler);
+    source.querySelector("button")!.click();
+    expect(handler).toHaveBeenCalledOnce();
+
+    renderer.dispose();
+    expect(document.querySelectorAll(overlayRootSelector)).toHaveLength(0);
+    expect(source.outerHTML).toBe(before);
+  });
+
+  it("does not duplicate surfaces when the same region is reconciled", () => {
+    const paragraph = document.querySelector("p")!;
+    const renderer = new OverlayRenderer(() => undefined);
+    const region = { id: "stable", element: paragraph, text: "Welcome reader", language: "en" as const, rect: paragraph.getBoundingClientRect() };
+    renderer.reconcile([region], new Map());
+    renderer.reconcile([region], new Map());
+    expect(document.querySelectorAll(overlayRootSelector)).toHaveLength(1);
+    renderer.dispose();
+  });
+});

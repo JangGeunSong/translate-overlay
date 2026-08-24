@@ -1,0 +1,21 @@
+{
+  "name": "context-reader-overlay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "verify": "npm run check && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.322",
+    "esbuild": "^0.25.5",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}
