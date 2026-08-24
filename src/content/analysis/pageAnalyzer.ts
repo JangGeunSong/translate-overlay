@@ -4,11 +4,17 @@ import {
   createRegionId,
   createSourceKey,
   detectSourceLanguage,
-  isElementVisible,
+  isElementRendered,
   isExcludedElement,
   isLikelyReadableText,
   normalizeText,
 } from "./text";
+import {
+  classifySemanticFeatures,
+  extractSemanticFeatures,
+  getTranslationPriority,
+  getViewportBand,
+} from "./semanticClassifier";
 
 export interface AnalysisOptions {
   maxRegions?: number;
@@ -55,25 +61,32 @@ export class PageAnalyzer {
 
     const regions: TextRegion[] = [];
     for (const [element, textParts] of blocks) {
-      if (regions.length >= maxRegions) break;
       const text = normalizeText(textParts.join(" "));
-      if (!isLikelyReadableText(text) || !isElementVisible(element)) continue;
+      if (!isLikelyReadableText(text) || !isElementRendered(element)) continue;
       const rect = element.getBoundingClientRect();
       const language = detectSourceLanguage(text);
+      const semanticClass = classifySemanticFeatures(extractSemanticFeatures(element, text, rect));
+      const viewportBand = getViewportBand(rect);
       regions.push({
         id: this.getRegionId(element),
         sourceKey: createSourceKey(text, language),
         element,
         text,
         language,
+        semanticClass,
+        viewportBand,
+        translationPriority: getTranslationPriority(semanticClass, viewportBand),
         rect,
       });
     }
-    return regions;
+    return regions
+      .sort((left, right) => left.translationPriority - right.translationPriority ||
+        Math.abs(left.rect.top) - Math.abs(right.rect.top))
+      .slice(0, maxRegions);
   }
 
   refresh(region: TextRegion): TextRegion | null {
-    if (!region.element.isConnected || !isElementVisible(region.element)) return null;
+    if (!region.element.isConnected || !isElementRendered(region.element)) return null;
     const analyzed = this.analyze({ roots: [region.element], maxRegions: 2 });
     return analyzed.find((candidate) => candidate.element === region.element) ?? null;
   }

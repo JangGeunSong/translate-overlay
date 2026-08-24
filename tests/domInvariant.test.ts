@@ -19,6 +19,7 @@ describe("non-destructive overlay invariant", () => {
     renderer.reconcile(
       [{
         id: "r1", sourceKey: "source-1", element: paragraph, text: "Welcome reader", language: "en",
+        semanticClass: "READING", viewportBand: "VIEWPORT", translationPriority: 0,
         rect: paragraph.getBoundingClientRect(),
       }],
       new Map([["r1", { regionId: "r1", requestKey: "request-1", translatedText: "독자 여러분 환영합니다", provider: "test" }]]),
@@ -41,7 +42,7 @@ describe("non-destructive overlay invariant", () => {
   it("does not duplicate surfaces when the same region is reconciled", () => {
     const paragraph = document.querySelector("p")!;
     const renderer = new OverlayRenderer(() => undefined);
-    const region = { id: "stable", sourceKey: "stable-source", element: paragraph, text: "Welcome reader", language: "en" as const, rect: paragraph.getBoundingClientRect() };
+    const region = { id: "stable", sourceKey: "stable-source", element: paragraph, text: "Welcome reader", language: "en" as const, semanticClass: "READING" as const, viewportBand: "VIEWPORT" as const, translationPriority: 0, rect: paragraph.getBoundingClientRect() };
     renderer.reconcile([region], new Map());
     renderer.reconcile([region], new Map());
     expect(document.querySelectorAll(overlayRootSelector)).toHaveLength(1);
@@ -51,7 +52,7 @@ describe("non-destructive overlay invariant", () => {
   it("bounds a long translation to the source rectangle", () => {
     const paragraph = document.querySelector("p")!;
     const renderer = new OverlayRenderer(() => undefined);
-    const region = { id: "long", sourceKey: "long-source", element: paragraph, text: "Short source", language: "en" as const, rect: paragraph.getBoundingClientRect() };
+    const region = { id: "long", sourceKey: "long-source", element: paragraph, text: "Short source", language: "en" as const, semanticClass: "READING" as const, viewportBand: "VIEWPORT" as const, translationPriority: 0, rect: paragraph.getBoundingClientRect() };
     renderer.reconcile(
       [region],
       new Map([["long", {

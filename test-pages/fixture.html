@@ -14,9 +14,11 @@
     <main id="source">
       <article id="article">
         <h1>Article documentation guide</h1>
+        <p class="byline">Author metadata</p>
         <p>The proposal was eventually shelved due to mounting regulatory pressure.</p>
         <div id="delayed-article"></div>
       </article>
+      <aside><p>Related reading links</p></aside>
       <section id="commerce">
         <h2>Subscription plans</h2>
         <p id="plan-state">Plan A costs $90 per month.</p>
@@ -36,6 +38,7 @@
       </section>
       <div class="spacer"></div>
     </main>
+    <footer>Related reading links</footer>
     <script>
       window.initialSourceMarkup = document.querySelector("#source").outerHTML;
       setTimeout(() => {

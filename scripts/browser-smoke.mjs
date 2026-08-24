@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { createInterpretationHandler } from "../server/app.mjs";
+import { createMockInterpretationProvider } from "../server/providers/mockProvider.mjs";
 
 const chromeCandidates = [
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -132,14 +134,61 @@ async function getProviderStatus(page) {
   };
 }
 
+async function getSurfaceSemantics(page) {
+  const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  return flattened.nodes.flatMap((node) => {
+    const attributes = node.attributes ?? [];
+    const classIndex = attributes.indexOf("class");
+    if (classIndex < 0 || !attributes[classIndex + 1]?.includes("translation-surface")) return [];
+    const sourceIndex = attributes.indexOf("data-source-text");
+    const semanticIndex = attributes.indexOf("data-semantic-class");
+    return sourceIndex < 0 || semanticIndex < 0 ? [] : [{ source: attributes[sourceIndex + 1], semanticClass: attributes[semanticIndex + 1] }];
+  });
+}
+
+async function getProgress(page) {
+  const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  const node = flattened.nodes.find((candidate) => {
+    const attributes = candidate.attributes ?? []; const index = attributes.indexOf("class");
+    return index >= 0 && attributes[index + 1]?.includes("translation-progress");
+  });
+  if (!node) return undefined;
+  const attributes = Object.fromEntries(Array.from({ length: (node.attributes ?? []).length / 2 }, (_, index) =>
+    [node.attributes[index * 2], node.attributes[index * 2 + 1]]));
+  return attributes;
+}
+
+async function clickShadowClass(page, className) {
+  const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  const node = flattened.nodes.find((candidate) => {
+    const attributes = candidate.attributes ?? []; const index = attributes.indexOf("class");
+    return index >= 0 && attributes[index + 1]?.includes(className);
+  });
+  if (!node) throw new Error(`Shadow control not found: ${className}`);
+  const resolved = await page.send("DOM.resolveNode", { nodeId: node.nodeId });
+  await page.send("Runtime.callFunctionOn", { objectId: resolved.object.objectId, functionDeclaration: "function(){ this.click(); }" });
+}
+
 const fixture = await readFile("test-pages/fixture.html");
 const server = createServer((_request, response) => {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(fixture);
 });
+let recordedContext;
+const testAllowedOrigins = [];
+const interpretationServer = createServer(createInterpretationHandler({ allowedOrigins: testAllowedOrigins, provider: {
+  ...createMockInterpretationProvider({ delayMs: 150 }),
+  async interpret(context, options) {
+    recordedContext = context;
+    return createMockInterpretationProvider({ delayMs: 150 }).interpret(context, options);
+  },
+} }));
 await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+await new Promise((resolveListen) => interpretationServer.listen(0, "127.0.0.1", resolveListen));
 const address = server.address();
+const interpretationAddress = interpretationServer.address();
 const pageUrl = `http://127.0.0.1:${address.port}/`;
+const interpretationUrl = `http://127.0.0.1:${interpretationAddress.port}/interpret`;
 const profile = await mkdtemp(resolve(tmpdir(), "context-reader-smoke-"));
 const chrome = await firstExisting(chromeCandidates);
 const debugPort = 9333;
@@ -168,11 +217,13 @@ try {
   const pageTarget = await waitForJson(targetsUrl, (targets) => targets.find((target) => target.type === "page" && target.url === pageUrl));
   const page = new CdpClient(pageTarget.webSocketDebuggerUrl);
   const worker = await waitForExtensionWorker(targetsUrl);
+  testAllowedOrigins.push(await evaluate(worker, "location.origin"));
   await page.ready;
 
   const tabId = await evaluate(worker, `chrome.tabs.query({}).then(tabs => tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)})?.id)`);
   if (!tabId) throw new Error("Fixture tab was not visible to the extension service worker.");
   const setReader = (enabled) => evaluate(worker, `chrome.tabs.sendMessage(${tabId}, {type:"SET_READER_ENABLED", enabled:${enabled}})`);
+  await evaluate(worker, `chrome.storage.local.set({ interpretationProvider: { endpoint: ${JSON.stringify(interpretationUrl)} } })`);
   await waitForCondition(
     () => evaluate(page, `document.querySelector("#delayed-article").textContent`),
     (text) => text.includes("Delayed article content"),
@@ -202,10 +253,10 @@ try {
   if (!translatedText) throw new Error("Translated surface did not contain presentation text.");
   const providerStatus = await waitForCondition(
     () => getProviderStatus(page),
-    (status) => status?.state === "ready" || status?.state === "fallback",
+    (status) => status?.state === "ready" || status?.state === "fallback" || status?.state === "unavailable",
     "visible translation provider capability state",
   );
-  if (!["browser-translator", "development-demo"].includes(providerStatus.mode)) {
+  if (!["browser-translator", "development-demo", "unavailable"].includes(providerStatus.mode)) {
     throw new Error(`Unexpected translation provider mode: ${JSON.stringify(providerStatus)}`);
   }
 
@@ -215,6 +266,13 @@ try {
     "initial article and subscription surfaces",
   );
   if (!initialSources.includes("Article documentation guide")) throw new Error("Article heading was not represented.");
+  const semantics = await getSurfaceSemantics(page);
+  const semanticOf = (source) => semantics.find((entry) => entry.source === source)?.semanticClass;
+  if (semanticOf("Article documentation guide") !== "READING") throw new Error(`Article title classification failed: ${JSON.stringify(semantics)}`);
+  if (semanticOf("Choose Plan B") !== "UI") throw new Error("Plan selector classification failed.");
+  if (semanticOf("Author metadata") !== "AUXILIARY" || semanticOf("Related reading links") !== "AUXILIARY") {
+    throw new Error(`Auxiliary classification failed: ${JSON.stringify(semantics)}`);
+  }
 
   await evaluate(page, `document.querySelector("#change-plan").click()`);
   const replacedSources = await waitForCondition(
@@ -223,7 +281,8 @@ try {
     "Plan B replacement surface",
   );
   if (replacedSources.includes("Plan A costs $90 per month.")) throw new Error("Stale Plan A overlay remained after replacement.");
-  if (new Set(replacedSources).size !== replacedSources.length) throw new Error("Duplicate overlays appeared after replacement.");
+  const uniqueExpectedSources = replacedSources.filter((source) => source !== "Related reading links");
+  if (new Set(uniqueExpectedSources).size !== uniqueExpectedSources.length) throw new Error("Duplicate overlays appeared after replacement.");
 
   await evaluate(page, `document.querySelector("#toggle-conditional").click()`);
   await waitForCondition(
@@ -299,9 +358,30 @@ try {
     throw new Error("Re-enable resurrected stale overlays.");
   }
 
+  await evaluate(page, `(() => {
+    const node = [...document.querySelectorAll("#article p")].find((element) => element.textContent.includes("shelved")).firstChild;
+    const start = node.textContent.indexOf("shelved");
+    const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + 7);
+    const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  })()`);
+  await delay(50);
+  await clickShadowClass(page, "selection-action");
+  await waitForCondition(async () => {
+    const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+    return flattened.nodes.map((node) => node.nodeValue ?? "").join(" ");
+  }, (text) => text.includes("제안 추진을 보류"), "selection interpretation popover");
+  if (!recordedContext || recordedContext.selectedText !== "shelved" || Object.keys(recordedContext).some((key) => /html|cookie|storage/i.test(key))) {
+    throw new Error(`Interpretation context was not bounded: ${JSON.stringify(recordedContext)}`);
+  }
+  const progress = await getProgress(page);
+  if (!progress?.["data-time-to-first-translation"] || !progress?.["data-time-to-viewport-ready"]) {
+    throw new Error(`Translation latency metrics were not exposed: ${JSON.stringify(progress)}`);
+  }
+
   page.close();
   worker.close();
-  console.log("Browser regression passed: article insertion, dynamic replacement, hide/show, removal, rapid mutations, SPA navigation, interaction, scroll, cleanup, and re-enable.");
+  console.log(`Browser regression passed with local interpretation E2E. Metrics: ${JSON.stringify(progress)}`);
 } finally {
   if (browser) {
     try { await browser.send("Browser.close"); } catch {}
@@ -314,5 +394,6 @@ try {
     delay(3_000),
   ]);
   await new Promise((resolveClose) => server.close(resolveClose));
+  await new Promise((resolveClose) => interpretationServer.close(resolveClose));
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

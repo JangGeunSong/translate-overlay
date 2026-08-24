@@ -23,7 +23,9 @@ export function reconcileRegions(
   for (const current of currentRegions) {
     const previous = previousById.get(current.id);
     if (!previous) result.added.push(current);
-    else if (previous.sourceKey !== current.sourceKey) result.changed.push({ previous, current });
+    else if (previous.sourceKey !== current.sourceKey || previous.semanticClass !== current.semanticClass) {
+      result.changed.push({ previous, current });
+    }
     else result.unchanged.push(current);
   }
   for (const previous of previousRegions) {

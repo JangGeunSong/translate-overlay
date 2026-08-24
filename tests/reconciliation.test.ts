@@ -12,6 +12,9 @@ function region(id: string, sourceKey: string): TextRegion {
     element,
     text: sourceKey,
     language: "en",
+    semanticClass: "READING",
+    viewportBand: "VIEWPORT",
+    translationPriority: 0,
     rect: element.getBoundingClientRect(),
   };
 }

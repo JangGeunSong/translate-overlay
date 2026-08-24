@@ -17,7 +17,7 @@ const EXCLUDED_SELECTOR = [
 ].join(",");
 
 export const READABLE_BLOCK_SELECTOR =
-  "p, li, blockquote, figcaption, dd, dt, h1, h2, h3, h4, h5, h6, article, section, main";
+  "button, a, label, summary, [role='button'], [role='tab'], [role='menuitem'], p, li, blockquote, figcaption, dd, dt, h1, h2, h3, h4, h5, h6, article, section, main";
 
 export function normalizeText(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
@@ -47,7 +47,7 @@ export function isLikelyReadableText(text: string): boolean {
   return detectSourceLanguage(normalized) !== "unknown";
 }
 
-export function isElementVisible(element: Element): boolean {
+export function isElementRendered(element: Element): boolean {
   const html = element as HTMLElement;
   if (!html.isConnected || isExcludedElement(html)) return false;
   if (typeof html.checkVisibility === "function" && !html.checkVisibility({
@@ -61,14 +61,13 @@ export function isElementVisible(element: Element): boolean {
     return false;
   }
   const rect = html.getBoundingClientRect();
-  return (
-    rect.width > 1 &&
-    rect.height > 1 &&
-    rect.bottom >= -100 &&
-    rect.top <= window.innerHeight + 100 &&
-    rect.right >= 0 &&
-    rect.left <= window.innerWidth
-  );
+  return rect.width > 1 && rect.height > 1;
+}
+
+export function isElementVisible(element: Element): boolean {
+  if (!isElementRendered(element)) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.bottom >= -100 && rect.top <= window.innerHeight + 100 && rect.right >= 0 && rect.left <= window.innerWidth;
 }
 
 export function hashString(value: string): string {

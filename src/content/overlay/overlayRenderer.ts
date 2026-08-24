@@ -1,4 +1,10 @@
-import type { InterpretationContext, ProviderStatus, TextRegion, TranslationResult } from "../types";
+import type {
+  InterpretationContext,
+  ProviderStatus,
+  TextRegion,
+  TranslationProgress,
+  TranslationResult,
+} from "../types";
 
 const ROOT_ATTRIBUTE = "data-context-reader-root";
 
@@ -22,6 +28,7 @@ export interface SurfaceDiagnostic {
   maxHeight: string;
   fontSize: string;
   compact: boolean;
+  semanticClass: TextRegion["semanticClass"];
 }
 
 export class OverlayRenderer {
@@ -31,6 +38,7 @@ export class OverlayRenderer {
   private readonly controlLayer: HTMLDivElement;
   private readonly surfaces = new Map<string, SurfaceEntry>();
   private readonly statusLabel: HTMLSpanElement;
+  private readonly progressLabel: HTMLSpanElement;
   private showingOriginal = false;
   private selectionAction?: HTMLButtonElement;
   private explanation?: HTMLDivElement;
@@ -48,6 +56,7 @@ export class OverlayRenderer {
     this.shadow.append(this.surfaceLayer, this.controlLayer);
     const toolbar = this.createToolbar(onToggleOriginal);
     this.statusLabel = toolbar.querySelector(".provider-status") as HTMLSpanElement;
+    this.progressLabel = toolbar.querySelector(".translation-progress") as HTMLSpanElement;
     this.controlLayer.append(toolbar);
     document.documentElement.append(this.host);
   }
@@ -64,6 +73,8 @@ export class OverlayRenderer {
         pointer-events: none; contain: layout paint style;
       }
       .translation-surface.compact { white-space: nowrap; text-overflow: ellipsis; }
+      .translation-surface.semantic-ui { white-space: nowrap; text-overflow: ellipsis; }
+      .translation-surface.semantic-auxiliary { opacity: .92; }
       .translation-surface.demo { outline: 1px dotted color-mix(in srgb, CanvasText 28%, transparent); }
       .toolbar {
         position: fixed; top: 12px; right: 12px; display: flex; align-items: center; gap: 8px;
@@ -72,6 +83,7 @@ export class OverlayRenderer {
         font: 12px/1.2 system-ui, sans-serif; pointer-events: auto;
       }
       .provider-status { color: #657080; }
+      .translation-progress { color: #2457d6; font-variant-numeric: tabular-nums; }
       button { border: 0; border-radius: 999px; padding: 6px 9px; cursor: pointer; font: inherit; }
       .toggle { background: #eaf0ff; color: #173b78; }
       .selection-action {
@@ -104,6 +116,9 @@ export class OverlayRenderer {
     const providerStatus = document.createElement("span");
     providerStatus.className = "provider-status";
     providerStatus.textContent = "번역 기능 확인 중";
+    const progress = document.createElement("span");
+    progress.className = "translation-progress";
+    progress.textContent = "원문 표시 중";
     const toggle = document.createElement("button");
     toggle.className = "toggle";
     toggle.textContent = "원문 보기";
@@ -113,7 +128,7 @@ export class OverlayRenderer {
       toggle.textContent = this.showingOriginal ? "번역 보기" : "원문 보기";
       onToggleOriginal(this.showingOriginal);
     });
-    toolbar.append(label, providerStatus, toggle);
+    toolbar.append(label, providerStatus, progress, toggle);
     return toolbar;
   }
 
@@ -123,6 +138,24 @@ export class OverlayRenderer {
     this.statusLabel.dataset.mode = status.mode;
     this.statusLabel.dataset.state = status.state;
     this.statusLabel.title = status.progress === undefined ? status.message : `${status.message} ${status.progress}%`;
+  }
+
+  setTranslationProgress(progress: TranslationProgress): void {
+    if (progress.failed > 0 && progress.queued + progress.translating === 0) {
+      this.progressLabel.textContent = `일부 번역 실패 · ${progress.completed}/${progress.total}`;
+    } else if (progress.queued + progress.translating > 0) {
+      this.progressLabel.textContent = `번역 중 · ${progress.completed}/${progress.total}`;
+    } else if (progress.viewportReady) {
+      this.progressLabel.textContent = `현재 화면 준비됨 · ${progress.completed}/${progress.total}`;
+    } else {
+      this.progressLabel.textContent = `원문 표시 중 · ${progress.completed}/${progress.total}`;
+    }
+    this.progressLabel.dataset.completed = String(progress.completed);
+    this.progressLabel.dataset.total = String(progress.total);
+    this.progressLabel.dataset.viewportReady = String(progress.viewportReady);
+    this.progressLabel.dataset.timeToFirstTranslation = String(progress.timeToFirstTranslationMs ?? "");
+    this.progressLabel.dataset.timeToFirstReading = String(progress.timeToFirstReadingContentMs ?? "");
+    this.progressLabel.dataset.timeToViewportReady = String(progress.timeToViewportReadyMs ?? "");
   }
 
   reconcile(regions: TextRegion[], translations: ReadonlyMap<string, TranslationResult>): OverlayReconcileStats {
@@ -136,7 +169,16 @@ export class OverlayRenderer {
       }
     }
     for (const region of regions) {
+      const result = translations.get(region.id);
       let entry = this.surfaces.get(region.id);
+      if (!result) {
+        if (entry) {
+          entry.element.remove();
+          this.surfaces.delete(region.id);
+          stats.disposed += 1;
+        }
+        continue;
+      }
       if (!entry) {
         const element = document.createElement("div");
         element.className = "translation-surface";
@@ -149,16 +191,19 @@ export class OverlayRenderer {
         stats.reused += 1;
       }
       entry.region = region;
-      const result = translations.get(region.id);
-      const renderedKey = result?.requestKey ?? `pending:${region.sourceKey}`;
+      const renderedKey = result.requestKey;
       if (entry.renderedKey !== renderedKey) {
-        entry.element.textContent = result?.translatedText ?? "해석 중…";
+        entry.element.textContent = result.translatedText;
         entry.renderedKey = renderedKey;
       }
       entry.element.dataset.sourceKey = region.sourceKey;
       entry.element.dataset.sourceText = region.text;
-      entry.element.classList.toggle("demo", result?.provider === "deterministic-demo");
-      entry.element.title = result ? `${result.provider} · 원문은 상단 버튼으로 확인` : "번역 준비 중";
+      entry.element.dataset.semanticClass = region.semanticClass;
+      entry.element.classList.toggle("semantic-reading", region.semanticClass === "READING");
+      entry.element.classList.toggle("semantic-ui", region.semanticClass === "UI");
+      entry.element.classList.toggle("semantic-auxiliary", region.semanticClass === "AUXILIARY");
+      entry.element.classList.toggle("demo", result.provider === "deterministic-demo");
+      entry.element.title = `${result.provider} · 원문은 상단 버튼으로 확인`;
       this.position(entry);
     }
     return stats;
@@ -188,7 +233,7 @@ export class OverlayRenderer {
     const translatedLength = entry.element.textContent?.length ?? 0;
     const density = translatedLength / Math.max(1, entry.region.text.length);
     const fontScale = density > 1.35 ? Math.max(0.78, 1 / Math.sqrt(density)) : 1;
-    const compact = rect.height < 22 || rect.width < 90;
+    const compact = entry.region.semanticClass === "UI" || rect.height < 22 || rect.width < 90;
     entry.element.classList.toggle("compact", compact);
     Object.assign(entry.element.style, {
       transform: `translate(${Math.round(rect.left)}px, ${Math.round(rect.top)}px)`,
@@ -196,7 +241,7 @@ export class OverlayRenderer {
       height: `${Math.max(1, Math.round(rect.height))}px`,
       maxHeight: `${Math.max(1, Math.round(rect.height))}px`,
       fontFamily: style.fontFamily,
-      fontSize: `${Math.max(10, sourceFontSize * fontScale)}px`,
+      fontSize: `${Math.max(10, sourceFontSize * fontScale * (entry.region.semanticClass === "UI" ? 0.9 : 1))}px`,
       fontWeight: style.fontWeight,
       lineHeight: style.lineHeight,
       textAlign: style.textAlign,
@@ -254,6 +299,7 @@ export class OverlayRenderer {
       maxHeight: entry.element.style.maxHeight,
       fontSize: entry.element.style.fontSize,
       compact: entry.element.classList.contains("compact"),
+      semanticClass: entry.region.semanticClass,
     }));
   }
 

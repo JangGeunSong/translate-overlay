@@ -24,9 +24,17 @@ Build output is generated in `dist/` with esbuild. Vitest and jsdom provide dete
 
 ## MVP behavior
 
-Clicking the extension action toggles the reader for the current tab. When enabled, the content script scans at most 40 currently visible or near-visible semantic blocks and translates missing linguistic inputs in batches of 12. It renders a fixed translation surface aligned to each source block. A compact toolbar switches all surfaces between translation and original view and reports translation capability state.
+Clicking the extension action toggles the reader for the current tab. When enabled, the content script considers at most 80 rendered semantic blocks and sends cache misses through the three-worker priority scheduler. It renders fixed translated surfaces only after linguistic output is ready. A compact toolbar switches all surfaces between translation and original view and reports capability and progress state.
 
 Selecting original page text exposes a **맥락 해석** action. The lightweight popover stays on the page and does not become a generic chat surface.
+
+## Semantic priority and observability
+
+Every region is deterministically classified as `READING`, `UI`, or `AUXILIARY` from native tags/roles, interactive and semantic ancestry, metadata hints, link density, text length, and geometry. Translation priority is viewport reading (0), viewport secondary (1), near reading (2), near secondary (3), far reading (4), and far secondary (5).
+
+`TranslationScheduler` runs three requests concurrently. It reprioritizes queued work on viewport-band changes, reuses cache and in-flight keys, removes no-longer-desired queued work, and rejects completion events after lifecycle generation invalidation. Pending regions leave the source visible. Reading surfaces favor wrapping; UI surfaces use compact visual ellipsis while retaining the full result.
+
+The toolbar reports completed/total work and viewport readiness. Readiness is at least 80% of current viewport `READING` regions. Diagnostics include request/cache counts, queue depth, active work, average/p50/p95 latency, `timeToFirstTranslation`, `timeToFirstReadingContent`, and `timeToViewportReady`.
 
 ## Page analysis and identity contracts
 
@@ -83,7 +91,9 @@ The collector rejects extension-owned selections and never sends page HTML. `Rem
 
 No private API key or production credential is accepted by this repository. The extension stores only a public endpoint. Provider secrets, model routing, authentication/abuse controls, and rate limiting belong on the secure backend. The repository grants localhost access for development; an exact production HTTPS origin must be added to the production manifest rather than granting broad host access.
 
-No backend was deployed in task `0002`. Without configuration, contextual interpretation visibly falls through to the deterministic development provider.
+Phase 3 adds a single Node HTTP backend under `server/`. It validates the version 1 bounded request, caps responses, applies timeout, error normalization, CORS/security headers, and a basic process-local rate limit. The production adapter uses the OpenAI Responses API with a server environment key and environment-selected model (`gpt-5.6-luna` by default). The extension bundle contains no credential.
+
+No public endpoint was deployed because no cloud account or provider secret was available. The browser regression instead proves extension → service worker → local backend → provider → Korean popover. Production deployment must use HTTPS, an exact extension CORS origin, and one exact backend manifest origin; the existing host permissions remain localhost-only.
 
 ## Overlay geometry and website integrity
 
@@ -112,8 +122,8 @@ The unpacked-extension regression uses `test-pages/fixture.html` in an installed
 
 ## Recommended next task
 
-Deploy one secure interpretation backend implementing the versioned contract, configure its public HTTPS endpoint and exact host permission, and run an end-to-end selection interpretation test without introducing a bundle secret.
+Deploy the existing backend behind one stable HTTPS origin, configure the exact extension CORS/manifest origins and server-side key, and rerun selection E2E against the real provider.
 
 ## Status
 
-MVP task `0001` and stabilization task `0002` are complete. Detailed findings and verification evidence live in `docs/tasks/0002-dynamic-lifecycle-and-providers.md`.
+MVP tasks `0001`, `0002`, and Phase 3 task `0003` are complete in the repository. Deployment remains external work. Phase 3 evidence lives in `docs/tasks/0003-semantic-priority-and-interpretation.md`.

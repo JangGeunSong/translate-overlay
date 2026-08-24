@@ -1,4 +1,13 @@
 export type SourceLanguage = "en" | "ja" | "zh" | "unknown";
+export type SemanticClass = "READING" | "UI" | "AUXILIARY";
+export type ViewportBand = "VIEWPORT" | "NEAR" | "FAR";
+export type TranslationLifecycleState =
+  | "queued"
+  | "translating"
+  | "translated"
+  | "fallback"
+  | "failed"
+  | "cached";
 
 export interface TextRegion {
   id: string;
@@ -6,6 +15,9 @@ export interface TextRegion {
   element: HTMLElement;
   text: string;
   language: SourceLanguage;
+  semanticClass: SemanticClass;
+  viewportBand: ViewportBand;
+  translationPriority: number;
   rect: DOMRect;
 }
 
@@ -65,4 +77,18 @@ export interface ProviderStatus {
   state: ProviderState;
   message: string;
   progress?: number;
+}
+
+export interface TranslationProgress {
+  total: number;
+  completed: number;
+  queued: number;
+  translating: number;
+  failed: number;
+  viewportReadingTotal: number;
+  viewportReadingReady: number;
+  viewportReady: boolean;
+  timeToFirstTranslationMs?: number;
+  timeToFirstReadingContentMs?: number;
+  timeToViewportReadyMs?: number;
 }

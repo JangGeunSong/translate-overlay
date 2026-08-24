@@ -13,7 +13,7 @@ Load `dist/` as an unpacked extension from `chrome://extensions` with Developer 
 
 Chrome's built-in Translator API is used when the browser exposes it and the required language model is available. Otherwise the extension uses a deliberately limited deterministic provider that proves the presentation and context architecture; it is not a production-quality general translator.
 
-The toolbar identifies whether browser translation is ready, a model is being prepared, the development fallback is active, or translation is unavailable.
+The toolbar identifies whether browser translation is ready, a model is being prepared, the development fallback is active, or translation is unavailable. Phase 3 classifies `READING`, `UI`, and `AUXILIARY` regions and uses a three-worker viewport-priority scheduler. Pending work leaves the source visible instead of showing translation-like placeholders.
 
 ## Production interpretation boundary
 
@@ -29,4 +29,10 @@ Production endpoints must use HTTPS and require an exact host permission in the 
 
 Set `localStorage.contextReaderDebug = "1"` on a test page to log reconciliation counters in development.
 
-See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md), the completed [initial MVP packet](docs/tasks/0001-mvp-reading-layer.md), and the active [dynamic lifecycle packet](docs/tasks/0002-dynamic-lifecycle-and-providers.md).
+## Interpretation backend
+
+Provide the variables documented in `.env.example`, keeping the real key out of Git, then run `npm run backend:start`. The backend implements `POST /interpret` and `GET /health`. Its default production provider uses the OpenAI Responses API; `INTERPRETATION_PROVIDER=mock` is local-test-only and is rejected when `NODE_ENV=production`.
+
+Deploy behind HTTPS, set `ALLOWED_EXTENSION_ORIGINS` to the exact installed extension origin, and add only that backend HTTPS origin to the production manifest. This repository contains neither deployment credentials nor a deployed endpoint.
+
+See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md), the [initial MVP packet](docs/tasks/0001-mvp-reading-layer.md), the [dynamic lifecycle packet](docs/tasks/0002-dynamic-lifecycle-and-providers.md), and the [Phase 3 packet](docs/tasks/0003-semantic-priority-and-interpretation.md).

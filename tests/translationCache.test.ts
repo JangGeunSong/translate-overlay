@@ -5,7 +5,7 @@ import type { TextRegion } from "../src/content/types";
 
 function region(id: string, text: string): TextRegion {
   const element = document.createElement("p");
-  return { id, sourceKey: text, element, text, language: "en", rect: element.getBoundingClientRect() };
+  return { id, sourceKey: text, element, text, language: "en", semanticClass: "READING", viewportBand: "VIEWPORT", translationPriority: 0, rect: element.getBoundingClientRect() };
 }
 
 describe("translation cache", () => {
