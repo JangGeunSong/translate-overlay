@@ -19,6 +19,7 @@ const handler = createInterpretationHandler({
   provider,
   allowedOrigins,
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 30),
+  exposeProviderDiagnostics: process.env.EXPOSE_PROVIDER_DIAGNOSTICS === "1" && process.env.NODE_ENV !== "production",
 });
 const server = createServer(handler);
 server.listen(port, "0.0.0.0", () => {

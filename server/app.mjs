@@ -26,6 +26,8 @@ export function createInterpretationHandler({
   allowedOrigins = [],
   timeoutMs = 12_000,
   rateLimitPerMinute = 30,
+  exposeProviderDiagnostics = false,
+  logger = console,
   now = () => Date.now(),
 }) {
   const requestsByAddress = new Map();
@@ -66,7 +68,7 @@ export function createInterpretationHandler({
         return json(response, 200, {
           version: 1,
           explanation,
-          provider: provider.name,
+          ...(exposeProviderDiagnostics ? { provider: provider.name } : {}),
           maximumCharacters: MAX_EXPLANATION_LENGTH,
         }, allowedOrigin);
       } finally {
@@ -77,7 +79,7 @@ export function createInterpretationHandler({
       if (error instanceof Error && error.message === "REQUEST_TOO_LARGE") {
         return json(response, 413, { error: "Request body is too large." }, allowedOrigin);
       }
-      console.error("Interpretation request failed", error);
+      logger.error("Interpretation provider request failed.");
       return json(response, 502, { error: "Interpretation provider failed." }, allowedOrigin);
     }
   };

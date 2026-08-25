@@ -28,6 +28,7 @@ export interface SurfaceDiagnostic {
   maxHeight: string;
   fontSize: string;
   compact: boolean;
+  suppressed: boolean;
   semanticClass: TextRegion["semanticClass"];
 }
 
@@ -138,6 +139,8 @@ export class OverlayRenderer {
     this.statusLabel.dataset.mode = status.mode;
     this.statusLabel.dataset.state = status.state;
     this.statusLabel.title = status.progress === undefined ? status.message : `${status.message} ${status.progress}%`;
+    this.host.dataset.providerMode = status.mode;
+    this.host.dataset.providerState = status.state;
   }
 
   setTranslationProgress(progress: TranslationProgress): void {
@@ -156,6 +159,21 @@ export class OverlayRenderer {
     this.progressLabel.dataset.timeToFirstTranslation = String(progress.timeToFirstTranslationMs ?? "");
     this.progressLabel.dataset.timeToFirstReading = String(progress.timeToFirstReadingContentMs ?? "");
     this.progressLabel.dataset.timeToViewportReady = String(progress.timeToViewportReadyMs ?? "");
+    this.progressLabel.dataset.translationRequests = String(progress.translationRequests ?? 0);
+    this.progressLabel.dataset.cacheHits = String(progress.cacheHits ?? 0);
+    this.progressLabel.dataset.averageTranslationLatency = String(progress.averageTranslationLatencyMs ?? "");
+    this.host.dataset.translationProgress = JSON.stringify(progress);
+  }
+
+  setInterpretationDiagnostics(diagnostics: {
+    requests: number;
+    successes: number;
+    failures: number;
+    averageLatencyMs: number | null;
+    p50LatencyMs: number | null;
+    p95LatencyMs: number | null;
+  }): void {
+    this.host.dataset.interpretationDiagnostics = JSON.stringify(diagnostics);
   }
 
   reconcile(regions: TextRegion[], translations: ReadonlyMap<string, TranslationResult>): OverlayReconcileStats {
@@ -194,6 +212,7 @@ export class OverlayRenderer {
       const renderedKey = result.requestKey;
       if (entry.renderedKey !== renderedKey) {
         entry.element.textContent = result.translatedText;
+        entry.element.dataset.fullTranslation = result.translatedText;
         entry.renderedKey = renderedKey;
       }
       entry.element.dataset.sourceKey = region.sourceKey;
@@ -203,9 +222,17 @@ export class OverlayRenderer {
       entry.element.classList.toggle("semantic-ui", region.semanticClass === "UI");
       entry.element.classList.toggle("semantic-auxiliary", region.semanticClass === "AUXILIARY");
       entry.element.classList.toggle("demo", result.provider === "deterministic-demo");
-      entry.element.title = `${result.provider} · 원문은 상단 버튼으로 확인`;
+      entry.element.title = result.translatedText;
       this.position(entry);
     }
+    const active = [...this.surfaces.values()];
+    this.host.dataset.surfaceDiagnostics = JSON.stringify({
+      total: active.length,
+      reading: active.filter((entry) => entry.region.semanticClass === "READING").length,
+      ui: active.filter((entry) => entry.region.semanticClass === "UI").length,
+      auxiliary: active.filter((entry) => entry.region.semanticClass === "AUXILIARY").length,
+      suppressed: active.filter((entry) => entry.element.dataset.suppressed === "true").length,
+    });
     return stats;
   }
 
@@ -227,8 +254,10 @@ export class OverlayRenderer {
     });
     const visible = cssVisible && browserVisible && rect.width > 1 && rect.height > 1 &&
       rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth;
-    entry.element.hidden = !visible;
-    if (!visible) return;
+    const suppressTinyUi = entry.region.semanticClass === "UI" && (rect.width < 48 || rect.height < 16);
+    entry.element.dataset.suppressed = String(suppressTinyUi);
+    entry.element.hidden = !visible || suppressTinyUi;
+    if (!visible || suppressTinyUi) return;
     const sourceFontSize = Number.parseFloat(style.fontSize) || 16;
     const translatedLength = entry.element.textContent?.length ?? 0;
     const density = translatedLength / Math.max(1, entry.region.text.length);
@@ -299,6 +328,7 @@ export class OverlayRenderer {
       maxHeight: entry.element.style.maxHeight,
       fontSize: entry.element.style.fontSize,
       compact: entry.element.classList.contains("compact"),
+      suppressed: entry.element.dataset.suppressed === "true",
       semanticClass: entry.region.semanticClass,
     }));
   }

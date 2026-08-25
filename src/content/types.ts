@@ -91,4 +91,10 @@ export interface TranslationProgress {
   timeToFirstTranslationMs?: number;
   timeToFirstReadingContentMs?: number;
   timeToViewportReadyMs?: number;
+  translationRequests?: number;
+  cacheHits?: number;
+  averageTranslationLatencyMs?: number;
+  readingRegions?: number;
+  uiRegions?: number;
+  auxiliaryRegions?: number;
 }

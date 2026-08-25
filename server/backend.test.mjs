@@ -30,7 +30,7 @@ describe("interpretation backend", () => {
 
   it("serves the full local HTTP contract and normalizes responses", async () => {
     const seen = [];
-    const handler = createInterpretationHandler({ allowedOrigins: [], provider: {
+    const handler = createInterpretationHandler({ allowedOrigins: [], exposeProviderDiagnostics: true, provider: {
       name: "fixture", interpret: async (value) => { seen.push(value); return "  짧은 문맥 설명  "; } } });
     const server = createServer(handler); servers.push(server);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -40,5 +40,58 @@ describe("interpretation backend", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ version: 1, explanation: "짧은 문맥 설명", provider: "fixture" });
     expect(seen).toEqual([context]);
+  });
+
+  it("extracts nested output and rejects malformed, failed, incomplete, or empty provider responses", async () => {
+    const successful = createOpenAIResponsesProvider({ apiKey: "test", maxRetries: 0, fetchImpl: vi.fn(async () => ({
+      ok: true, json: async () => ({ status: "completed", output: [{ content: [{ type: "output_text", text: "중첩 출력" }] }] }),
+    })) });
+    expect(await successful.interpret(context)).toBe("중첩 출력");
+    for (const payload of [null, {}, { error: { code: "bad" } }, { status: "incomplete", output_text: "partial" }, { status: "completed", output_text: " " }]) {
+      const provider = createOpenAIResponsesProvider({ apiKey: "test", maxRetries: 0, fetchImpl: vi.fn(async () => ({
+        ok: true, json: async () => payload,
+      })) });
+      await expect(provider.interpret(context)).rejects.toThrow();
+    }
+  });
+
+  it("retries one transient 5xx but does not retry a 4xx", async () => {
+    const transientFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, headers: { get: () => "0" } })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ output_text: "복구됨" }) });
+    const transient = createOpenAIResponsesProvider({ apiKey: "test", maxRetries: 1, fetchImpl: transientFetch });
+    expect(await transient.interpret(context)).toBe("복구됨");
+    expect(transientFetch).toHaveBeenCalledTimes(2);
+
+    const clientFetch = vi.fn(async () => ({ ok: false, status: 400, headers: { get: () => null } }));
+    const clientError = createOpenAIResponsesProvider({ apiKey: "test", maxRetries: 1, fetchImpl: clientFetch });
+    await expect(clientError.interpret(context)).rejects.toThrow("HTTP 400");
+    expect(clientFetch).toHaveBeenCalledOnce();
+  });
+
+  it("normalizes provider timeout and caps overlong output without exposing raw errors", async () => {
+    const handler = createInterpretationHandler({ allowedOrigins: [], timeoutMs: 10, provider: {
+      name: "slow-secret-provider", interpret: (_value, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("raw provider credential detail")), { once: true });
+      }),
+    } });
+    const server = createServer(handler); servers.push(server);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/interpret`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(envelope),
+    });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "Interpretation provider failed." });
+
+    const cappedHandler = createInterpretationHandler({ allowedOrigins: [], provider: {
+      name: "capped", interpret: async () => "가".repeat(2_000),
+    } });
+    const cappedServer = createServer(cappedHandler); servers.push(cappedServer);
+    await new Promise((resolve) => cappedServer.listen(0, "127.0.0.1", resolve));
+    const cappedResponse = await fetch(`http://127.0.0.1:${cappedServer.address().port}/interpret`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(envelope),
+    });
+    expect((await cappedResponse.json()).explanation).toHaveLength(1_200);
   });
 });

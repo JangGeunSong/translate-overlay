@@ -69,4 +69,22 @@ describe("non-destructive overlay invariant", () => {
     });
     renderer.dispose();
   });
+
+  it("preserves full UI translations but suppresses overlays too small to read safely", () => {
+    const button = document.querySelector("button")!;
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+      x: 10, y: 20, top: 20, left: 10, right: 50, bottom: 34, width: 40, height: 14,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const renderer = new OverlayRenderer(() => undefined);
+    const translation = "계속 진행하기";
+    renderer.reconcile([{
+      id: "tiny-ui", sourceKey: "tiny-ui-source", element: button, text: "Go", language: "en",
+      semanticClass: "UI", viewportBand: "VIEWPORT", translationPriority: 1, rect: button.getBoundingClientRect(),
+    }], new Map([["tiny-ui", {
+      regionId: "tiny-ui", requestKey: "tiny-ui-request", translatedText: translation, provider: "test",
+    }]]));
+    expect(renderer.getSurfaceDiagnostics()[0]).toMatchObject({ hidden: true, suppressed: true, semanticClass: "UI" });
+    renderer.dispose();
+  });
 });

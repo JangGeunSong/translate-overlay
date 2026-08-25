@@ -196,6 +196,9 @@ const child = spawn(chrome, [
   "--no-first-run",
   "--disable-default-apps",
   "--disable-gpu",
+  "--disable-backgrounding-occluded-windows",
+  "--disable-renderer-backgrounding",
+  "--disable-background-timer-throttling",
   "--window-position=-32000,-32000",
   "--window-size=900,700",
   `--user-data-dir=${profile}`,
@@ -374,6 +377,10 @@ try {
   if (!recordedContext || recordedContext.selectedText !== "shelved" || Object.keys(recordedContext).some((key) => /html|cookie|storage/i.test(key))) {
     throw new Error(`Interpretation context was not bounded: ${JSON.stringify(recordedContext)}`);
   }
+  const interpretationMetrics = await evaluate(page, `JSON.parse(document.querySelector("[data-context-reader-root]").dataset.interpretationDiagnostics)`);
+  if (interpretationMetrics.requests !== 1 || interpretationMetrics.successes !== 1 || interpretationMetrics.failures !== 0 || interpretationMetrics.averageLatencyMs < 100) {
+    throw new Error(`Interpretation metrics were invalid: ${JSON.stringify(interpretationMetrics)}`);
+  }
   const progress = await getProgress(page);
   if (!progress?.["data-time-to-first-translation"] || !progress?.["data-time-to-viewport-ready"]) {
     throw new Error(`Translation latency metrics were not exposed: ${JSON.stringify(progress)}`);
@@ -381,7 +388,7 @@ try {
 
   page.close();
   worker.close();
-  console.log(`Browser regression passed with local interpretation E2E. Metrics: ${JSON.stringify(progress)}`);
+  console.log(`Browser regression passed with local interpretation E2E. Metrics: ${JSON.stringify({ translation: progress, interpretation: interpretationMetrics })}`);
 } finally {
   if (browser) {
     try { await browser.send("Browser.close"); } catch {}

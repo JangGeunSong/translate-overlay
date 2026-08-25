@@ -21,6 +21,8 @@ export interface AnalysisOptions {
   roots?: ParentNode[];
 }
 
+const VIEWPORT_BLOCK_SELECTOR = "button, a, label, summary, [role='button'], [role='tab'], [role='menuitem'], p, li, blockquote, figcaption, dd, dt, h1, h2, h3, h4, h5, h6";
+
 export class PageAnalyzer {
   private readonly regionIds = new WeakMap<HTMLElement, string>();
 
@@ -35,8 +37,27 @@ export class PageAnalyzer {
   analyze(options: AnalysisOptions = {}): TextRegion[] {
     const maxRegions = options.maxRegions ?? 40;
     const blocks = new Map<HTMLElement, string[]>();
+    const seededBlocks = new Set<HTMLElement>();
+    let boundedUiBlocks = 0;
     const roots = this.compactRoots(options.roots ?? [document.body]);
+    if (roots.includes(document.body) && typeof document.elementFromPoint === "function") {
+      const xSamples = [innerWidth * 0.2, innerWidth * 0.5, innerWidth * 0.8];
+      const step = Math.max(80, innerHeight / 10);
+      for (let y = 8; y < innerHeight; y += step) {
+        for (const x of xSamples) {
+          const hit = document.elementFromPoint(x, y);
+          const block = hit?.closest(VIEWPORT_BLOCK_SELECTOR) as HTMLElement | null;
+          if (!block || isExcludedElement(block)) continue;
+          const text = normalizeText(block.innerText || block.textContent || "");
+          if (isLikelyReadableText(text)) {
+            blocks.set(block, [text]);
+            seededBlocks.add(block);
+          }
+        }
+      }
+    }
     for (const root of roots) {
+      let scannedTextNodes = 0;
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
           const parent = node.parentElement;
@@ -48,26 +69,37 @@ export class PageAnalyzer {
       });
 
       while (walker.nextNode()) {
+        scannedTextNodes += 1;
         const node = walker.currentNode as Text;
         const parent = node.parentElement;
         if (!parent) continue;
         const block = (parent.closest(READABLE_BLOCK_SELECTOR) ?? parent) as HTMLElement;
         if (isExcludedElement(block) || !this.belongsToRoots(block, roots)) continue;
+        if (seededBlocks.has(block)) continue;
+        if (!blocks.has(block) && (
+          block.matches("a, button, label, summary, [role='button'], [role='tab'], [role='menuitem']") ||
+          Boolean(block.closest("nav, [role='navigation'], [role='menu'], [role='tablist']"))
+        )) {
+          if (boundedUiBlocks >= maxRegions * 2) continue;
+          boundedUiBlocks += 1;
+        }
         const texts = blocks.get(block) ?? [];
         texts.push(node.nodeValue ?? "");
         blocks.set(block, texts);
+        if (blocks.size >= maxRegions * 30 || scannedTextNodes >= maxRegions * 100) break;
       }
     }
 
-    const regions: TextRegion[] = [];
+    const candidates: TextRegion[] = [];
     for (const [element, textParts] of blocks) {
       const text = normalizeText(textParts.join(" "));
-      if (!isLikelyReadableText(text) || !isElementRendered(element)) continue;
+      if (!isLikelyReadableText(text) || !element.isConnected) continue;
       const rect = element.getBoundingClientRect();
+      if (rect.width <= 1 || rect.height <= 1) continue;
       const language = detectSourceLanguage(text);
       const semanticClass = classifySemanticFeatures(extractSemanticFeatures(element, text, rect));
       const viewportBand = getViewportBand(rect);
-      regions.push({
+      candidates.push({
         id: this.getRegionId(element),
         sourceKey: createSourceKey(text, language),
         element,
@@ -79,10 +111,22 @@ export class PageAnalyzer {
         rect,
       });
     }
-    return regions
-      .sort((left, right) => left.translationPriority - right.translationPriority ||
+    const sorted = candidates.sort((left, right) => left.translationPriority - right.translationPriority ||
         Math.abs(left.rect.top) - Math.abs(right.rect.top))
-      .slice(0, maxRegions);
+      .slice(0, maxRegions * 2)
+      .filter((region) => isElementRendered(region.element));
+    const limits = { READING: maxRegions, UI: Math.ceil(maxRegions * 0.3), AUXILIARY: Math.ceil(maxRegions * 0.25) };
+    const selected: TextRegion[] = [];
+    const deferred: TextRegion[] = [];
+    const counts = { READING: 0, UI: 0, AUXILIARY: 0 };
+    for (const region of sorted) {
+      if (counts[region.semanticClass] < limits[region.semanticClass]) {
+        selected.push(region);
+        counts[region.semanticClass] += 1;
+      } else deferred.push(region);
+      if (selected.length === maxRegions) return selected;
+    }
+    return [...selected, ...deferred].slice(0, maxRegions);
   }
 
   refresh(region: TextRegion): TextRegion | null {

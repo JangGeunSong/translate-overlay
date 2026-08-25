@@ -109,6 +109,16 @@ The deterministic suite covers filtering, language hints, logical identity, sour
 
 The unpacked-extension regression uses `test-pages/fixture.html` in an installed Chromium browser. It validates delayed article insertion; subscription plan and price replacement; CSS hide/show; node removal; 25 rapid text changes; History API plus SPA route replacement; provider-mode UI; source preservation; page-button interaction; scroll survival; full cleanup; current-state-only re-enable; and one active host.
 
+## Phase 4 production and public-site findings
+
+The Responses API adapter now validates completed/non-empty output, retries one configurable 429/5xx response with abort-aware backoff, and never returns or logs raw provider errors. Provider identity is excluded from production application responses. Interpretation request/success/failure and average/p50/p95 latency are separate from translation metrics.
+
+`CONTEXT_READER_API_ORIGIN` adds exactly one HTTPS backend origin to the generated manifest; validation rejects broad HTTPS permission. The source manifest remains localhost-only. The container runs as the unprivileged `node` user and includes a health check. No HTTPS deployment or real provider call occurred because no deployment credential, stable origin, or `OPENAI_API_KEY` was available. Docker CLI was installed, but its Linux daemon was not running.
+
+Read-only Edge 151 QA covered Wikipedia's Machine translation article, Adobe Creative Cloud plans, and React Quick Start. Every site retained one extension host through scroll and OFF/ON. Edge did not expose the Translator API, so provider mode was `unavailable` and no site reached viewport-ready. Wikipedia first measured 9/66/5 reading/UI/auxiliary and exposed navigation domination; after navigation candidate bounds it measured 64/12/4. Adobe measured 61/18/1 and one cache hit; its first limited-demo surface was 197.9 ms. React measured 56/23/1, one cache hit, and a 57.8 ms first limited-demo reading surface. These are fallback timings, not general translation or real-provider latency.
+
+UI surfaces under 48×16 px are suppressed rather than painting unreadable ellipsis over controls; full output remains cached. Scheduler-driven presentation is coalesced to one animation frame. Discovery seeds the viewport, bounds fallback scanning and expensive visibility checks, and prevents one semantic class from exhausting the region budget.
+
 ## Known limitations
 
 - Public production websites were not exercised in this environment; the three representative categories use deterministic fixture sections.
@@ -116,14 +126,16 @@ The unpacked-extension regression uses `test-pages/fixture.html` in an installed
 - Bounded long translations can be clipped.
 - General translation depends on Chrome 138+ desktop, supported language packs, model availability, and browser activation rules.
 - The production interpretation backend is a client/security contract only until an endpoint is deployed and permitted.
+- The tested Edge 151 build did not expose the Translator API; general page translation was unavailable.
+- Unavailable translation work is retried after OFF/ON and can produce many fast failures on large pages.
 - There is no user-facing endpoint or production host-permission settings flow.
 - Han-only Japanese can be classified as Chinese.
 - History API calls without DOM mutation are detected only by later `popstate`/hash events or content changes.
 
 ## Recommended next task
 
-Deploy the existing backend behind one stable HTTPS origin, configure the exact extension CORS/manifest origins and server-side key, and rerun selection E2E against the real provider.
+Deploy the existing backend behind one stable HTTPS origin, configure exact CORS/manifest origins and a server-side key, and rerun browser selection E2E against the real provider.
 
 ## Status
 
-MVP tasks `0001`, `0002`, and Phase 3 task `0003` are complete in the repository. Deployment remains external work. Phase 3 evidence lives in `docs/tasks/0003-semantic-priority-and-interpretation.md`.
+MVP tasks `0001` through `0004` are complete in the repository. Production deployment and general translation availability remain blockers. Phase 4 evidence lives in `docs/tasks/0004-production-e2e-and-public-qa.md`.

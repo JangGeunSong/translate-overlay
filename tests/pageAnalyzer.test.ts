@@ -35,4 +35,17 @@ describe("PageAnalyzer", () => {
     expect(afterText.id).toBe(before.id);
     expect(afterText.sourceKey).not.toBe(before.sourceKey);
   });
+
+  it("prevents viewport controls from exhausting the bounded semantic budget", () => {
+    document.body.innerHTML = `<main>${Array.from({ length: 12 }, (_, index) => `<button>Menu option ${index}</button>`).join("")}${
+      Array.from({ length: 8 }, (_, index) => `<p>Substantive documentation paragraph number ${index} with enough readable context.</p>`).join("")}</main>`;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const top = this.tagName === "BUTTON" ? 20 : innerHeight + 40;
+      return { x: 10, y: top, top, left: 10, right: 410, bottom: top + 50, width: 400, height: 50,
+        toJSON: () => ({}) } as DOMRect;
+    });
+    const regions = new PageAnalyzer().analyze({ maxRegions: 10 });
+    expect(regions.filter((region) => region.semanticClass === "UI")).toHaveLength(3);
+    expect(regions.filter((region) => region.semanticClass === "READING")).toHaveLength(7);
+  });
 });

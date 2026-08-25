@@ -50,6 +50,12 @@ export interface ReaderDiagnostics {
   averageTranslationLatencyMs: number | null;
   p50TranslationLatencyMs: number | null;
   p95TranslationLatencyMs: number | null;
+  interpretationRequestCount: number;
+  interpretationSuccessCount: number;
+  interpretationFailureCount: number;
+  averageInterpretationLatencyMs: number | null;
+  p50InterpretationLatencyMs: number | null;
+  p95InterpretationLatencyMs: number | null;
   timeToFirstTranslationMs: number | null;
   timeToFirstReadingContentMs: number | null;
   timeToViewportReadyMs: number | null;
@@ -82,6 +88,12 @@ const emptyDiagnostics = (): ReaderDiagnostics => ({
   averageTranslationLatencyMs: null,
   p50TranslationLatencyMs: null,
   p95TranslationLatencyMs: null,
+  interpretationRequestCount: 0,
+  interpretationSuccessCount: 0,
+  interpretationFailureCount: 0,
+  averageInterpretationLatencyMs: null,
+  p50InterpretationLatencyMs: null,
+  p95InterpretationLatencyMs: null,
   timeToFirstTranslationMs: null,
   timeToFirstReadingContentMs: null,
   timeToViewportReadyMs: null,
@@ -101,6 +113,7 @@ export class ReaderController {
   private readonly failedKeys = new Set<string>();
   private readonly observedCacheKeys = new Set<string>();
   private readonly observedMissKeys = new Set<string>();
+  private readonly interpretationLatencySamples: number[] = [];
   private readonly latencySamples: number[] = [];
   private readonly scheduler: TranslationScheduler;
   private diagnostics = emptyDiagnostics();
@@ -108,6 +121,7 @@ export class ReaderController {
   private mutationTimer?: number;
   private firstMutationAt?: number;
   private positionFrame?: number;
+  private presentationFrame?: number;
   private lastAnalyzedScrollY = 0;
   private readerStartedAt = 0;
   private unsubscribeStatus?: () => void;
@@ -184,6 +198,7 @@ export class ReaderController {
     this.observedCacheKeys.clear();
     this.observedMissKeys.clear();
     this.latencySamples.length = 0;
+    this.interpretationLatencySamples.length = 0;
   }
 
   private stop(): void {
@@ -200,6 +215,7 @@ export class ReaderController {
     if (this.scanTimer) clearTimeout(this.scanTimer);
     if (this.mutationTimer) clearTimeout(this.mutationTimer);
     if (this.positionFrame) cancelAnimationFrame(this.positionFrame);
+    if (this.presentationFrame) cancelAnimationFrame(this.presentationFrame);
     this.unsubscribeStatus?.();
     this.unsubscribeStatus = undefined;
     this.renderer?.dispose();
@@ -207,6 +223,8 @@ export class ReaderController {
     this.regions = [];
     this.affectedRoots.clear();
     this.firstMutationAt = undefined;
+    this.positionFrame = undefined;
+    this.presentationFrame = undefined;
   }
 
   private readonly onProviderStatus = (status: ProviderStatus): void => {
@@ -419,8 +437,16 @@ export class ReaderController {
       this.recordLatency(event.latencyMs);
     }
     this.updateSchedulerSnapshot();
-    this.updatePresentation();
+    this.schedulePresentation();
     this.debugLog();
+  }
+
+  private schedulePresentation(): void {
+    if (this.presentationFrame !== undefined) return;
+    this.presentationFrame = requestAnimationFrame(() => {
+      this.presentationFrame = undefined;
+      if (this.enabled) this.updatePresentation();
+    });
   }
 
   private setActiveProvider(provider: string): void {
@@ -465,6 +491,12 @@ export class ReaderController {
       timeToFirstTranslationMs: this.diagnostics.timeToFirstTranslationMs ?? undefined,
       timeToFirstReadingContentMs: this.diagnostics.timeToFirstReadingContentMs ?? undefined,
       timeToViewportReadyMs: this.diagnostics.timeToViewportReadyMs ?? undefined,
+      translationRequests: this.diagnostics.translationRequests,
+      cacheHits: this.diagnostics.translationCacheHits,
+      averageTranslationLatencyMs: this.diagnostics.averageTranslationLatencyMs ?? undefined,
+      readingRegions: this.diagnostics.readingRegions,
+      uiRegions: this.diagnostics.uiRegions,
+      auxiliaryRegions: this.diagnostics.auxiliaryRegions,
     });
   }
 
@@ -555,13 +587,36 @@ export class ReaderController {
 
   private async interpret(context: InterpretationContext): Promise<void> {
     if (!this.renderer) return;
+    const startedAt = performance.now();
+    this.diagnostics.interpretationRequestCount += 1;
     this.renderer.showExplanation(context, "선택한 표현과 주변 문맥을 확인하고 있습니다.", true);
     try {
       const result = await this.provider.interpret(context);
+      this.diagnostics.interpretationSuccessCount += 1;
       if (this.enabled) this.renderer?.showExplanation(context, result.explanation, false, result.provider);
     } catch {
+      this.diagnostics.interpretationFailureCount += 1;
       if (this.enabled) this.renderer?.showExplanation(context, "문맥 해석에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      this.recordInterpretationLatency(performance.now() - startedAt);
+      this.renderer?.setInterpretationDiagnostics({
+        requests: this.diagnostics.interpretationRequestCount,
+        successes: this.diagnostics.interpretationSuccessCount,
+        failures: this.diagnostics.interpretationFailureCount,
+        averageLatencyMs: this.diagnostics.averageInterpretationLatencyMs,
+        p50LatencyMs: this.diagnostics.p50InterpretationLatencyMs,
+        p95LatencyMs: this.diagnostics.p95InterpretationLatencyMs,
+      });
+      this.debugLog();
     }
+  }
+
+  private recordInterpretationLatency(latencyMs: number): void {
+    this.interpretationLatencySamples.push(latencyMs);
+    const sorted = [...this.interpretationLatencySamples].sort((left, right) => left - right);
+    this.diagnostics.averageInterpretationLatencyMs = sorted.reduce((total, value) => total + value, 0) / sorted.length;
+    this.diagnostics.p50InterpretationLatencyMs = this.percentile(sorted, 0.5);
+    this.diagnostics.p95InterpretationLatencyMs = this.percentile(sorted, 0.95);
   }
 
   private debugLog(): void {
