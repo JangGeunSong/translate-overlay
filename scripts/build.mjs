@@ -13,6 +13,11 @@ async function buildManifest() {
       throw new Error("CONTEXT_READER_API_ORIGIN must be an exact HTTPS origin without a path.");
     }
     manifest.host_permissions = [...new Set([...manifest.host_permissions, `${url.origin}/*`])];
+    const connectSource = url.origin;
+    manifest.content_security_policy.extension_pages = manifest.content_security_policy.extension_pages.replace(
+      /connect-src ([^;]+)/u,
+      (_directive, sources) => `connect-src ${sources} ${connectSource}`,
+    );
   }
   await writeFile(`${outdir}/manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }

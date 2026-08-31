@@ -10,6 +10,9 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://localhost:* http://127.0.0.1:*"
+  },
   "action": {
     "default_title": "읽기 레이어 켜기/끄기"
   },
