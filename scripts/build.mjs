@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 
 const outdir = "dist";
+const demoEnabled = process.env.CONTEXT_READER_DEMO === "true";
 
 async function buildManifest() {
   const manifest = JSON.parse(await readFile("manifest.json", "utf8"));
@@ -35,6 +36,9 @@ await Promise.all([
     format: "iife",
     target: "chrome114",
     sourcemap: true,
+    define: {
+      __CONTEXT_READER_DEMO_ENABLED__: JSON.stringify(demoEnabled),
+    },
   }),
   buildManifest(),
 ]);

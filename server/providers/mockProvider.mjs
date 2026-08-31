@@ -11,5 +11,12 @@ export function createMockInterpretationProvider({ delayMs = 15 } = {}) {
       }
       return `선택한 “${context.selectedText}”는 현재 문장과 문단 안에서 이해해야 하는 표현입니다.`;
     },
+    async translate(request, { signal } = {}) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, delayMs);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      });
+      return `[${request.targetLanguage}] ${request.text}`;
+    },
   };
 }

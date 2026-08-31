@@ -1,13 +1,17 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInterpretationHandler } from "./app.mjs";
-import { validateInterpretationEnvelope } from "./contract.mjs";
+import { validateInterpretationEnvelope, validateTranslationEnvelope } from "./contract.mjs";
+import { createMockInterpretationProvider } from "./providers/mockProvider.mjs";
 import { createOpenAIResponsesProvider } from "./providers/openaiResponsesProvider.mjs";
 
 const context = { selectedText: "shelved", sentence: "The proposal was eventually shelved.", paragraph: "The proposal was eventually shelved.",
   previousParagraph: "Earlier context.", nextParagraph: "Later context.", nearestHeading: "Policy",
   pageTitle: "Fixture", sourceLanguage: "en", targetLanguage: "ko" };
 const envelope = { version: 1, operation: "interpret", context, response: { language: "ko", maximumCharacters: 1200 } };
+const translationEnvelope = { version: 1, operation: "translate", requests: [
+  { requestKey: "request-1", text: "Hello world", sourceLanguage: "en", targetLanguage: "ko" },
+], response: { maximumCharactersPerTranslation: 8000 } };
 const servers = [];
 afterEach(async () => Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve)))));
 
@@ -93,5 +97,49 @@ describe("interpretation backend", () => {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(envelope),
     });
     expect((await cappedResponse.json()).explanation).toHaveLength(1_200);
+  });
+});
+
+describe("translation backend", () => {
+  it("validates the bounded identity-preserving translation contract", () => {
+    expect(validateTranslationEnvelope(translationEnvelope).ok).toBe(true);
+    expect(validateTranslationEnvelope({ ...translationEnvelope, version: 2 }).ok).toBe(false);
+    expect(validateTranslationEnvelope({ ...translationEnvelope, requests: [
+      translationEnvelope.requests[0], translationEnvelope.requests[0],
+    ] }).ok).toBe(false);
+    expect(validateTranslationEnvelope({ ...translationEnvelope, requests: [{
+      ...translationEnvelope.requests[0], text: "x".repeat(4_001),
+    }] }).ok).toBe(false);
+  });
+
+  it("serves deterministic local translation success, failure, and recovery", async () => {
+    let fail = false;
+    const mock = createMockInterpretationProvider({ delayMs: 0 });
+    const provider = {
+      ...mock,
+      async translate(request, options) {
+        if (fail) throw new Error("temporary fixture failure");
+        return mock.translate(request, options);
+      },
+    };
+    const handler = createInterpretationHandler({ allowedOrigins: [], provider, logger: { error: vi.fn() } });
+    const server = createServer(handler); servers.push(server);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${server.address().port}/translate`;
+    const post = () => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(translationEnvelope) });
+
+    const success = await post();
+    expect(success.status).toBe(200);
+    expect(await success.json()).toMatchObject({
+      version: 1,
+      translations: [{ requestKey: "request-1", translatedText: "[ko] Hello world" }],
+      maximumCharactersPerTranslation: 8_000,
+    });
+    fail = true;
+    const failure = await post();
+    expect(failure.status).toBe(502);
+    expect(await failure.json()).toEqual({ error: "Translation provider failed." });
+    fail = false;
+    expect((await post()).status).toBe(200);
   });
 });

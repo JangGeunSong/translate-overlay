@@ -1,4 +1,12 @@
-import { MAX_EXPLANATION_LENGTH, MAX_REQUEST_BYTES, normalizeExplanation, validateInterpretationEnvelope } from "./contract.mjs";
+import {
+  MAX_EXPLANATION_LENGTH,
+  MAX_REQUEST_BYTES,
+  MAX_TRANSLATION_LENGTH,
+  normalizeExplanation,
+  normalizeTranslation,
+  validateInterpretationEnvelope,
+  validateTranslationEnvelope,
+} from "./contract.mjs";
 
 function json(response, status, body, origin) {
   response.writeHead(status, {
@@ -47,7 +55,8 @@ export function createInterpretationHandler({
     if (request.method === "GET" && request.url === "/health") {
       return json(response, 200, { ok: true, provider: provider.name });
     }
-    if (request.method !== "POST" || request.url !== "/interpret") {
+    const operation = request.url === "/interpret" ? "interpret" : request.url === "/translate" ? "translate" : undefined;
+    if (request.method !== "POST" || !operation) {
       return json(response, 404, { error: "Not found." }, allowedOrigin);
     }
     if (origin && !allowedOrigin) return json(response, 403, { error: "Origin is not allowed." });
@@ -59,17 +68,31 @@ export function createInterpretationHandler({
     else if (++rate.count > rateLimitPerMinute) return json(response, 429, { error: "Rate limit exceeded." }, allowedOrigin);
 
     try {
-      const validation = validateInterpretationEnvelope(await readJson(request));
+      const validation = operation === "interpret"
+        ? validateInterpretationEnvelope(await readJson(request))
+        : validateTranslationEnvelope(await readJson(request));
       if (!validation.ok) return json(response, 400, { error: validation.error }, allowedOrigin);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new Error("Provider timeout.")), timeoutMs);
       try {
-        const explanation = normalizeExplanation(await provider.interpret(validation.context, { signal: controller.signal }));
+        if (operation === "interpret") {
+          const explanation = normalizeExplanation(await provider.interpret(validation.context, { signal: controller.signal }));
+          return json(response, 200, {
+            version: 1,
+            explanation,
+            ...(exposeProviderDiagnostics ? { provider: provider.name } : {}),
+            maximumCharacters: MAX_EXPLANATION_LENGTH,
+          }, allowedOrigin);
+        }
+        const translations = await Promise.all(validation.requests.map(async (translationRequest) => ({
+          requestKey: translationRequest.requestKey,
+          translatedText: normalizeTranslation(await provider.translate(translationRequest, { signal: controller.signal })),
+        })));
         return json(response, 200, {
           version: 1,
-          explanation,
+          translations,
           ...(exposeProviderDiagnostics ? { provider: provider.name } : {}),
-          maximumCharacters: MAX_EXPLANATION_LENGTH,
+          maximumCharactersPerTranslation: MAX_TRANSLATION_LENGTH,
         }, allowedOrigin);
       } finally {
         clearTimeout(timer);
@@ -79,8 +102,8 @@ export function createInterpretationHandler({
       if (error instanceof Error && error.message === "REQUEST_TOO_LARGE") {
         return json(response, 413, { error: "Request body is too large." }, allowedOrigin);
       }
-      logger.error("Interpretation provider request failed.");
-      return json(response, 502, { error: "Interpretation provider failed." }, allowedOrigin);
+      logger.error(`${operation === "interpret" ? "Interpretation" : "Translation"} provider request failed.`);
+      return json(response, 502, { error: `${operation === "interpret" ? "Interpretation" : "Translation"} provider failed.` }, allowedOrigin);
     }
   };
 }

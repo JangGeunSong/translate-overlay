@@ -1,18 +1,13 @@
 import type { ReaderMessage, ReaderStateResponse } from "../shared/messages";
 import { PageAnalyzer } from "./analysis/pageAnalyzer";
-import { BuiltInTranslatorProvider } from "./providers/builtInTranslatorProvider";
-import { DemoProvider } from "./providers/demoProvider";
-import { ProviderChain } from "./providers/provider";
-import { RemoteInterpretationProvider } from "./providers/remoteInterpretationProvider";
+import { createRuntimeProviderChain } from "./providers/runtimeProviderChain";
 import { ReaderController } from "./readerController";
+
+declare const __CONTEXT_READER_DEMO_ENABLED__: boolean;
 
 const controller = new ReaderController(
   new PageAnalyzer(),
-  new ProviderChain([
-    new BuiltInTranslatorProvider(),
-    new RemoteInterpretationProvider(),
-    new DemoProvider(),
-  ]),
+  createRuntimeProviderChain(__CONTEXT_READER_DEMO_ENABLED__),
 );
 
 chrome.runtime.onMessage.addListener((message: ReaderMessage) => {

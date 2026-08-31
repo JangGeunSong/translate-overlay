@@ -1,5 +1,6 @@
-import type { InterpretationProviderResponse, ReaderMessage, ReaderStateResponse } from "../shared/messages";
+import type { InterpretationProviderResponse, ReaderMessage, ReaderStateResponse, TranslationProviderResponse } from "../shared/messages";
 import { requestRemoteInterpretation } from "./interpretationBackend";
+import { requestRemoteTranslation } from "./translationBackend";
 
 const stateKey = (tabId: number): string => `reader:${tabId}`;
 
@@ -29,7 +30,7 @@ chrome.runtime.onMessage.addListener(
   (
     message: ReaderMessage,
     sender,
-    sendResponse: (response: ReaderStateResponse | InterpretationProviderResponse) => void,
+    sendResponse: (response: ReaderStateResponse | InterpretationProviderResponse | TranslationProviderResponse) => void,
   ) => {
     if (message.type === "GET_READER_STATE" && sender.tab?.id) {
       void getEnabled(sender.tab.id).then((enabled) => sendResponse({ enabled }));
@@ -37,6 +38,10 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === "INTERPRET_CONTEXT" && sender.tab?.id) {
       void requestRemoteInterpretation(message.context).then(sendResponse);
+      return true;
+    }
+    if (message.type === "TRANSLATE_REMOTE" && sender.tab?.id) {
+      void requestRemoteTranslation(message.requests).then(sendResponse);
       return true;
     }
     return false;

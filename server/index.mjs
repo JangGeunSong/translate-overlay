@@ -23,5 +23,5 @@ const handler = createInterpretationHandler({
 });
 const server = createServer(handler);
 server.listen(port, "0.0.0.0", () => {
-  console.log(`Interpretation backend listening on port ${port} with ${provider.name}.`);
+  console.log(`Linguistic backend listening on port ${port} with ${provider.name}.`);
 });

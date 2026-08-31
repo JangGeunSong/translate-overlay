@@ -458,6 +458,14 @@ export class ReaderController {
         state: "fallback",
         message: "개발용 번역 사용 중 (제한됨)",
       });
+    } else if (provider === "production-remote") {
+      this.activeTranslationMode = "production-remote";
+      this.onProviderStatus({
+        capability: "translation",
+        mode: "production-remote",
+        state: "ready",
+        message: "원격 번역 준비됨",
+      });
     } else if (provider === "chrome-built-in-translator") {
       this.activeTranslationMode = "browser-translator";
       this.onProviderStatus({

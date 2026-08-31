@@ -13,9 +13,9 @@ The workspace was empty at the start of MVP task `0001`. There was no prior mani
 ## Current architecture
 
 - Chrome Manifest V3 extension.
-- `src/background/`: action-click/per-tab state orchestration and the secure interpretation backend client.
+- `src/background/`: action-click/per-tab state orchestration and secure translation/interpretation backend clients.
 - `src/content/analysis/`: read-only visible-region discovery, identity, reconciliation, translation cache keys, language hints, and bounded context assembly.
-- `src/content/providers/`: structured provider contracts, Chrome built-in Translator adapter, service-worker remote interpretation adapter, and deterministic development fallback.
+- `src/content/providers/`: structured provider contracts, Chrome built-in Translator adapter, service-worker remote translation/interpretation adapters, and deterministic development fallback.
 - `src/content/overlay/`: one closed Shadow DOM containing passive translated surfaces and narrowly interactive controls.
 - `src/content/readerController.ts`: region lifecycle, bounded translation batches, observer scheduling, provider state, selection flow, and cleanup.
 - `tests/`: deterministic unit/integration tests and an unpacked-extension browser regression.
@@ -70,11 +70,19 @@ Development instrumentation is enabled with `localStorage.contextReaderDebug = "
 
 ## Translation and interpretation boundary
 
-`LinguisticProvider` accepts structured translation batches and structured interpretation context. `ProviderChain` tries Chrome's built-in Translator API for translation, the service-worker remote provider for interpretation, and finally `DemoProvider`.
+`LinguisticProvider` accepts structured translation batches and structured interpretation context. For translation, the default `ProviderChain` tries Chrome's built-in Translator API and then the service-worker remote translation provider; if both fail, the chain reports translation as unavailable. `DemoProvider` remains available only in an explicitly opted-in development build (`CONTEXT_READER_DEMO=true npm run build`). Interpretation continues through its remote adapter, with deterministic interpretation fallback likewise present only in that demo build.
 
 Chrome documents the Translator API as desktop-only and available from Chrome 138. The adapter evaluates `availability()` per language pair and reports `available`, `downloadable`, `downloading`, `ready`, `unavailable`, or `error`, including `downloadprogress`. Rejected translator creation is removed from the cache so a later attempt can retry. Provider modes are explicit: `browser-translator`, `production-remote`, `development-demo`, and `unavailable`.
 
 The deterministic fallback has a deliberately tiny phrase set. The toolbar identifies it as a limited development mode; it is never presented silently as production translation.
+
+## Remote translation boundary
+
+`RemoteTranslationProvider` sends translation batches to the service worker and never fetches a backend from the page/content-script context. The worker revalidates a maximum of three requests, 4,000 source characters per request, unique request keys, 200-character identities, and 35-character language identifiers. It requires HTTPS except for localhost, checks exact-origin host permission, omits credentials, and applies a 15-second request timeout.
+
+The version 1 `POST /translate` envelope contains only `requestKey`, source text, source language, target language, and an 8,000-character response bound. A successful response must return exactly one non-empty translation for each unique request key. The worker restores the local `regionId`; the backend never controls DOM-region identity. Invalid, partial, duplicate, oversized, HTTP-error, and network-error responses become provider failures, allowing `ProviderChain` to continue without affecting scheduling or rendering.
+
+The Node backend exposes the same timeout, CORS, rate-limit, normalized-error, and no-store protections as interpretation. Its deterministic local provider returns stable fixture translations. The remote provider has no sticky failure state, so a later request retries after a temporary outage.
 
 ## Context extraction and production interpretation
 
@@ -91,7 +99,7 @@ The collector rejects extension-owned selections and never sends page HTML. `Rem
 
 No private API key or production credential is accepted by this repository. The extension stores only a public endpoint. Provider secrets, model routing, authentication/abuse controls, and rate limiting belong on the secure backend. The repository grants localhost access for development; an exact production HTTPS origin must be added to the production manifest rather than granting broad host access.
 
-Phase 3 adds a single Node HTTP backend under `server/`. It validates the version 1 bounded request, caps responses, applies timeout, error normalization, CORS/security headers, and a basic process-local rate limit. The production adapter uses the OpenAI Responses API with a server environment key and environment-selected model (`gpt-5.6-luna` by default). The extension bundle contains no credential.
+Phase 3 added a single Node HTTP backend under `server/`; Phase 5A extends it with `POST /translate`. It validates versioned bounded requests, caps responses, applies timeout, error normalization, CORS/security headers, and a basic process-local rate limit. The production adapter uses the OpenAI Responses API with a server environment key and environment-selected model (`gpt-5.6-luna` by default). The extension bundle contains no credential.
 
 No public endpoint was deployed because no cloud account or provider secret was available. The browser regression instead proves extension → service worker → local backend → provider → Korean popover. Production deployment must use HTTPS, an exact extension CORS origin, and one exact backend manifest origin; the existing host permissions remain localhost-only.
 
@@ -105,7 +113,7 @@ Surfaces never exceed the current source rectangle height. Text wraps in ordinar
 
 ## Verification
 
-The deterministic suite covers filtering, language hints, logical identity, source invalidation, four-way reconciliation, translation reuse, visibility rejection, bounded context, extension-owned exclusion, Translator status transitions, secure backend request/response bounds, source-markup preservation, interaction, geometry bounds, cleanup, and duplicate prevention.
+The deterministic suite covers filtering, language hints, logical identity, source invalidation, four-way reconciliation, translation reuse, visibility rejection, bounded context, extension-owned exclusion, Translator status transitions, remote translation success/failure/recovery, secure backend request/response bounds, source-markup preservation, interaction, geometry bounds, cleanup, and duplicate prevention.
 
 The unpacked-extension regression uses `test-pages/fixture.html` in an installed Chromium browser. It validates delayed article insertion; subscription plan and price replacement; CSS hide/show; node removal; 25 rapid text changes; History API plus SPA route replacement; provider-mode UI; source preservation; page-button interaction; scroll survival; full cleanup; current-state-only re-enable; and one active host.
 
@@ -124,9 +132,8 @@ UI surfaces under 48×16 px are suppressed rather than painting unreadable ellip
 - Public production websites were not exercised in this environment; the three representative categories use deterministic fixture sections.
 - Complex transforms, vertical text, overlapping source rectangles, iframes, and page-owned closed Shadow DOM remain unsupported or approximate.
 - Bounded long translations can be clipped.
-- General translation depends on Chrome 138+ desktop, supported language packs, model availability, and browser activation rules.
-- The production interpretation backend is a client/security contract only until an endpoint is deployed and permitted.
-- The tested Edge 151 build did not expose the Translator API; general page translation was unavailable.
+- Remote translation and interpretation require a configured, permitted backend endpoint; no public endpoint is deployed by this repository.
+- The tested Edge 151 public-site run predates the Phase 5A remote translation path and remains evidence only for browser-provider unavailability.
 - Unavailable translation work is retried after OFF/ON and can produce many fast failures on large pages.
 - There is no user-facing endpoint or production host-permission settings flow.
 - Han-only Japanese can be classified as Chinese.
@@ -134,8 +141,8 @@ UI surfaces under 48×16 px are suppressed rather than painting unreadable ellip
 
 ## Recommended next task
 
-Deploy the existing backend behind one stable HTTPS origin, configure exact CORS/manifest origins and a server-side key, and rerun browser selection E2E against the real provider.
+Deploy the existing backend behind one stable HTTPS origin, configure exact CORS/manifest origins and a server-side key, and rerun translation plus selection E2E against the real provider.
 
 ## Status
 
-MVP tasks `0001` through `0004` are complete in the repository. Production deployment and general translation availability remain blockers. Phase 4 evidence lives in `docs/tasks/0004-production-e2e-and-public-qa.md`.
+MVP tasks `0001` through `0004` and Phase 5A task `0005` are complete in the repository. Production deployment remains out of scope. Phase 5A evidence lives in `docs/tasks/0005-remote-translation-provider.md`.
