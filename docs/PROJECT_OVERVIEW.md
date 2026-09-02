@@ -97,11 +97,15 @@ Context collection is deterministic and bounded before provider invocation:
 
 The collector rejects extension-owned selections and never sends page HTML. `RemoteInterpretationProvider` sends this structure to the service worker. The worker revalidates every bound and calls a configured backend with a versioned JSON request. HTTPS is mandatory outside localhost, `credentials` is `omit`, host permission is checked, and explanations are capped at 1,200 characters.
 
-No private API key or production credential is accepted by this repository. The extension stores only a public endpoint. Provider secrets, model routing, authentication/abuse controls, and rate limiting belong on the secure backend. The repository grants localhost access for development; an exact production HTTPS origin must be added to the production manifest rather than granting broad host access.
+No private API key or production credential is accepted by the extension. The extension stores only public endpoint URLs. Provider secrets and model routing belong on the secure backend. The repository grants localhost access for development; an exact production HTTPS origin must be added to the production manifest rather than granting broad host access.
 
 Phase 3 added a single Node HTTP backend under `server/`; Phase 5A extends it with `POST /translate`. It validates versioned bounded requests, caps responses, applies timeout, error normalization, CORS/security headers, and a basic process-local rate limit. The production adapter uses the OpenAI Responses API with a server environment key and environment-selected model (`gpt-5.6-luna` by default). The extension bundle contains no credential.
 
-No public endpoint was deployed because no cloud account or provider secret was available. The browser regression instead proves extension → service worker → local backend → provider → Korean popover. Production deployment must use HTTPS, an exact extension CORS origin, and one exact backend manifest origin; the existing host permissions remain localhost-only.
+The backend now validates configuration before listening. Production requires the OpenAI provider, a server-side key, and at least one exact `chrome-extension://<32-character-id>` CORS origin. It rejects mock production mode, unknown providers, malformed origins, and invalid port, provider-timeout, retry, or rate-limit bounds. The default 12-second provider timeout and process-local 30-request-per-minute limit are configurable within bounded ranges. Provider errors remain normalized and diagnostics remain disabled in production.
+
+The process binds plain HTTP on `0.0.0.0:$PORT` and is deployment-neutral: a generic Node.js 20+ host or the unprivileged Node.js 24 container can run it behind external HTTPS/TLS termination. `GET /health` supports deployment probes. Durable or multi-instance rate limiting and abuse controls remain deployment responsibilities.
+
+No public endpoint was deployed because no cloud account, stable origin, or provider secret was available. The browser regression instead proves extension → service worker → local backend → provider → Korean popover. Production deployment must use HTTPS, exact installed-extension CORS origin(s), and one exact backend manifest origin; the source manifest remains localhost-only.
 
 ## Overlay geometry and website integrity
 
@@ -123,7 +127,7 @@ Phase 5B extends that regression through the real unpacked MV3 service worker an
 
 The Responses API adapter now validates completed/non-empty output, retries one configurable 429/5xx response with abort-aware backoff, and never returns or logs raw provider errors. Provider identity is excluded from production application responses. Interpretation request/success/failure and average/p50/p95 latency are separate from translation metrics.
 
-`CONTEXT_READER_API_ORIGIN` adds exactly one HTTPS backend origin to the generated manifest; validation rejects broad HTTPS permission. The source manifest remains localhost-only. The container runs as the unprivileged `node` user and includes a health check. No HTTPS deployment or real provider call occurred because no deployment credential, stable origin, or `OPENAI_API_KEY` was available. Docker CLI was installed, but its Linux daemon was not running.
+`CONTEXT_READER_API_ORIGIN` adds exactly one HTTPS backend origin to the generated manifest and CSP; validation rejects broad HTTPS permission. Runtime storage supplies only the public `/translate` and `/interpret` URLs on that origin. The source manifest remains localhost-only. The container runs as the unprivileged `node` user and includes a health check. No HTTPS deployment or real provider call occurred because no deployment credential, stable origin, or `OPENAI_API_KEY` was available.
 
 Read-only Edge 151 QA covered Wikipedia's Machine translation article, Adobe Creative Cloud plans, and React Quick Start. Every site retained one extension host through scroll and OFF/ON. Edge did not expose the Translator API, so provider mode was `unavailable` and no site reached viewport-ready. Wikipedia first measured 9/66/5 reading/UI/auxiliary and exposed navigation domination; after navigation candidate bounds it measured 64/12/4. Adobe measured 61/18/1 and one cache hit; its first limited-demo surface was 197.9 ms. React measured 56/23/1, one cache hit, and a 57.8 ms first limited-demo reading surface. These are fallback timings, not general translation or real-provider latency.
 
@@ -138,14 +142,15 @@ UI surfaces under 48×16 px are suppressed rather than painting unreadable ellip
 - The tested Edge 151 public-site run predates the Phase 5A remote translation path and remains evidence only for browser-provider unavailability.
 - Unavailable translation work is retried after OFF/ON and can produce many fast failures on large pages.
 - There is no user-facing endpoint or production host-permission settings flow.
+- Backend rate limiting is per-process and keyed to the immediate peer address; production-scale distributed abuse protection is deployment-owned.
 - Han-only Japanese can be classified as Chinese.
 - History API calls without DOM mutation are detected only by later `popstate`/hash events or content changes.
 - Browser integration requires a locally installed Chrome or Edge executable; nonstandard locations must be supplied through `CONTEXT_READER_BROWSER`.
 
-## Recommended next task
+## Required deployment follow-up
 
-Deploy the existing backend behind one stable HTTPS origin, configure exact CORS/manifest origins and a server-side key, and rerun translation plus selection E2E against the real provider.
+HUMAN_REQUIRED: choose a hosting vendor and stable HTTPS domain, provision infrastructure/TLS and a server-side OpenAI key, determine stable distributed extension ID(s) for exact CORS, choose deployment-level abuse controls, and run the opt-in real-provider smoke plus translation/selection browser E2E against the deployed origin.
 
 ## Status
 
-MVP tasks `0001` through `0004`, Phase 5A task `0005`, and Phase 5B task `0006` are complete in the repository. Production deployment remains out of scope. Phase 5B evidence lives in `docs/tasks/0006-mv3-remote-browser-verification.md`.
+MVP tasks `0001` through `0004`, Phase 5A task `0005`, Phase 5B task `0006`, and repository-side Phase 5C readiness task `0007` are complete. Production deployment remains HUMAN_REQUIRED and out of repository scope. Phase 5C evidence lives in `docs/tasks/0007-production-backend-readiness.md`.

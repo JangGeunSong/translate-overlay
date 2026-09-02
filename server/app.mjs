@@ -39,6 +39,7 @@ export function createInterpretationHandler({
   now = () => Date.now(),
 }) {
   const requestsByAddress = new Map();
+  let activeMinute;
   return async function handle(request, response) {
     const origin = request.headers.origin;
     const allowedOrigin = origin && allowedOrigins.includes(origin) ? origin : undefined;
@@ -63,6 +64,10 @@ export function createInterpretationHandler({
 
     const address = request.socket.remoteAddress ?? "unknown";
     const minute = Math.floor(now() / 60_000);
+    if (minute !== activeMinute) {
+      requestsByAddress.clear();
+      activeMinute = minute;
+    }
     const rate = requestsByAddress.get(address);
     if (!rate || rate.minute !== minute) requestsByAddress.set(address, { minute, count: 1 });
     else if (++rate.count > rateLimitPerMinute) return json(response, 429, { error: "Rate limit exceeded." }, allowedOrigin);

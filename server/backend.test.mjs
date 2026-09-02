@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createInterpretationHandler } from "./app.mjs";
+import { readServerConfig } from "./config.mjs";
 import { validateInterpretationEnvelope, validateTranslationEnvelope } from "./contract.mjs";
 import { createMockInterpretationProvider } from "./providers/mockProvider.mjs";
 import { createOpenAIResponsesProvider } from "./providers/openaiResponsesProvider.mjs";
@@ -14,6 +15,43 @@ const translationEnvelope = { version: 1, operation: "translate", requests: [
 ], response: { maximumCharactersPerTranslation: 8000 } };
 const servers = [];
 afterEach(async () => Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve)))));
+
+describe("production server configuration", () => {
+  const extensionOrigin = `chrome-extension://${"a".repeat(32)}`;
+
+  it("accepts a complete production configuration and disables provider diagnostics", () => {
+    expect(readServerConfig({
+      NODE_ENV: "production",
+      INTERPRETATION_PROVIDER: "openai",
+      OPENAI_API_KEY: "server-only-key",
+      ALLOWED_EXTENSION_ORIGINS: `${extensionOrigin},${extensionOrigin}`,
+      PORT: "8080",
+      PROVIDER_TIMEOUT_MS: "15000",
+      RATE_LIMIT_PER_MINUTE: "60",
+      OPENAI_MAX_RETRIES: "2",
+      EXPOSE_PROVIDER_DIAGNOSTICS: "1",
+    })).toMatchObject({
+      port: 8080,
+      providerMode: "openai",
+      allowedOrigins: [extensionOrigin],
+      timeoutMs: 15_000,
+      rateLimitPerMinute: 60,
+      exposeProviderDiagnostics: false,
+      openAI: { apiKey: "server-only-key", maxRetries: 2 },
+    });
+  });
+
+  it("rejects unsafe or ambiguous startup configuration", () => {
+    const production = { NODE_ENV: "production", OPENAI_API_KEY: "key", ALLOWED_EXTENSION_ORIGINS: extensionOrigin };
+    expect(() => readServerConfig({ ...production, INTERPRETATION_PROVIDER: "mock" })).toThrow(/mock/u);
+    expect(() => readServerConfig({ ...production, INTERPRETATION_PROVIDER: "unknown" })).toThrow(/INTERPRETATION_PROVIDER/u);
+    expect(() => readServerConfig({ ...production, ALLOWED_EXTENSION_ORIGINS: "" })).toThrow(/ALLOWED_EXTENSION_ORIGINS/u);
+    expect(() => readServerConfig({ ...production, ALLOWED_EXTENSION_ORIGINS: "https://reader.example.test" })).toThrow(/chrome-extension/u);
+    expect(() => readServerConfig({ ...production, OPENAI_API_KEY: "" })).toThrow(/OPENAI_API_KEY/u);
+    expect(() => readServerConfig({ ...production, RATE_LIMIT_PER_MINUTE: "0" })).toThrow(/RATE_LIMIT_PER_MINUTE/u);
+    expect(() => readServerConfig({ ...production, PROVIDER_TIMEOUT_MS: "NaN" })).toThrow(/PROVIDER_TIMEOUT_MS/u);
+  });
+});
 
 describe("interpretation backend", () => {
   it("accepts only the bounded versioned context contract", () => {
@@ -44,6 +82,37 @@ describe("interpretation backend", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ version: 1, explanation: "짧은 문맥 설명", provider: "fixture" });
     expect(seen).toEqual([context]);
+  });
+
+  it("exposes health and applies exact-origin CORS and rate limiting", async () => {
+    const allowedOrigin = `chrome-extension://${"b".repeat(32)}`;
+    const handler = createInterpretationHandler({
+      allowedOrigins: [allowedOrigin],
+      rateLimitPerMinute: 1,
+      provider: { name: "fixture", interpret: async () => "explanation" },
+    });
+    const server = createServer(handler); servers.push(server);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    const health = await fetch(`${baseUrl}/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true, provider: "fixture" });
+
+    const denied = await fetch(`${baseUrl}/interpret`, {
+      method: "OPTIONS", headers: { origin: "chrome-extension://cccccccccccccccccccccccccccccccc" },
+    });
+    expect(denied.status).toBe(403);
+
+    const post = () => fetch(`${baseUrl}/interpret`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: allowedOrigin },
+      body: JSON.stringify(envelope),
+    });
+    const allowed = await post();
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(allowedOrigin);
+    expect((await post()).status).toBe(429);
   });
 
   it("extracts nested output and rejects malformed, failed, incomplete, or empty provider responses", async () => {
