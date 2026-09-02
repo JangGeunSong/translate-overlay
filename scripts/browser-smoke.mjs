@@ -190,13 +190,18 @@ async function waitForExtensionWorker(browser, targetsUrl, child) {
 
 async function waitForCondition(read, predicate, description, attempts = 40) {
   let lastValue;
+  let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const value = await read();
-    lastValue = value;
-    if (predicate(value)) return value;
+    try {
+      const value = await read();
+      lastValue = value;
+      if (predicate(value)) return value;
+    } catch (error) {
+      lastError = error;
+    }
     await delay(100);
   }
-  throw new Error(`Timed out waiting for ${description}. Last value: ${JSON.stringify(lastValue)}`);
+  throw new Error(`Timed out waiting for ${description}. Last value: ${JSON.stringify(lastValue)}. Last error: ${lastError instanceof Error ? lastError.message : "none"}`);
 }
 
 async function getSurfaceSources(page) {
@@ -288,7 +293,12 @@ const interpretationServer = createServer(createInterpretationHandler({ allowedO
     translationSuccesses += 1;
     return result;
   },
-}, logger: { error() {} } }));
+},
+  // Keep intentional outage/recovery independent from the production-default
+  // rate limit, which has its own backend coverage.
+  rateLimitPerMinute: 200,
+  logger: { error() {} },
+}));
 await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
 await new Promise((resolveListen) => interpretationServer.listen(0, "127.0.0.1", resolveListen));
 const address = server.address();
@@ -307,7 +317,7 @@ const child = spawn(chrome, [
   "--disable-backgrounding-occluded-windows",
   "--disable-renderer-backgrounding",
   "--disable-background-timer-throttling",
-  "--disable-features=TranslationAPI,TranslationAPIV1",
+  "--disable-blink-features=TranslationAPI",
   "--silent-debugger-extension-api",
   "--window-position=-32000,-32000",
   "--window-size=900,700",
@@ -382,8 +392,13 @@ try {
     interpretationProvider: { endpoint: ${JSON.stringify(interpretationUrl)} },
     translationProvider: { endpoint: ${JSON.stringify(translationUrl)} }
   })`);
+  // The first tab can commit before an unpacked extension has completed startup,
+  // especially on a fresh Edge profile. Reload only after the worker and its test
+  // configuration are ready so content-script injection is deterministic.
+  await page.send("Page.enable");
+  await page.send("Page.reload", { ignoreCache: true });
   await waitForCondition(
-    () => evaluate(page, `document.querySelector("#delayed-article").textContent`),
+    () => evaluate(page, `document.querySelector("#delayed-article")?.textContent ?? ""`),
     (text) => text.includes("Delayed article content"),
     "fixture delayed article insertion",
   );
@@ -419,8 +434,13 @@ try {
   );
   await setReader(true);
   await waitForCondition(
-    () => getProviderStatus(page),
-    (status) => status?.mode === "production-remote" && status?.state === "ready",
+    async () => ({
+      status: await getProviderStatus(page),
+      translationFailures,
+      translationSuccesses,
+      progress: await getProgress(page),
+    }),
+    (diagnostics) => diagnostics.status?.mode === "production-remote" && diagnostics.status?.state === "ready",
     "remote translation recovery",
     100,
   );
@@ -446,6 +466,9 @@ try {
   );
   if (providerStatus.mode !== "production-remote" || providerStatus.state !== "ready") {
     throw new Error(`Unexpected translation provider mode: ${JSON.stringify(providerStatus)}`);
+  }
+  if (!await evaluate(page, `document.querySelector("#source").outerHTML === window.sourceBeforeReader`)) {
+    throw new Error("Source markup changed while rendering recovered remote translations.");
   }
 
   const initialSources = await waitForCondition(

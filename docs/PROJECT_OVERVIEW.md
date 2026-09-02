@@ -117,6 +117,8 @@ The deterministic suite covers filtering, language hints, logical identity, sour
 
 The unpacked-extension regression uses `test-pages/fixture.html` in an installed Chromium browser. It validates delayed article insertion; subscription plan and price replacement; CSS hide/show; node removal; 25 rapid text changes; History API plus SPA route replacement; provider-mode UI; source preservation; page-button interaction; scroll survival; full cleanup; current-state-only re-enable; and one active host.
 
+Phase 5B extends that regression through the real unpacked MV3 service worker and a deterministic loopback backend. The browser Translator API is disabled with the Blink runtime-feature switch and verified unavailable before reader activation. The suite first injects transient backend failures, confirms the overlay and source interaction remain alive, then performs an OFF/ON request cycle and requires deterministic remote translations. A fresh-profile startup race is avoided by reloading the fixture only after the extension worker and endpoint configuration are ready. CDP discovery, WebSocket commands, page conditions, and cleanup are bounded and report their last observation plus recent browser output on failure. The test server uses a raised test-only rate limit so the intentional outage/recovery scenario is not conflated with the backend's separately tested production default limit.
+
 ## Phase 4 production and public-site findings
 
 The Responses API adapter now validates completed/non-empty output, retries one configurable 429/5xx response with abort-aware backoff, and never returns or logs raw provider errors. Provider identity is excluded from production application responses. Interpretation request/success/failure and average/p50/p95 latency are separate from translation metrics.
@@ -138,6 +140,7 @@ UI surfaces under 48×16 px are suppressed rather than painting unreadable ellip
 - There is no user-facing endpoint or production host-permission settings flow.
 - Han-only Japanese can be classified as Chinese.
 - History API calls without DOM mutation are detected only by later `popstate`/hash events or content changes.
+- Browser integration requires a locally installed Chrome or Edge executable; nonstandard locations must be supplied through `CONTEXT_READER_BROWSER`.
 
 ## Recommended next task
 
@@ -145,4 +148,4 @@ Deploy the existing backend behind one stable HTTPS origin, configure exact CORS
 
 ## Status
 
-MVP tasks `0001` through `0004` and Phase 5A task `0005` are complete in the repository. Production deployment remains out of scope. Phase 5A evidence lives in `docs/tasks/0005-remote-translation-provider.md`.
+MVP tasks `0001` through `0004`, Phase 5A task `0005`, and Phase 5B task `0006` are complete in the repository. Production deployment remains out of scope. Phase 5B evidence lives in `docs/tasks/0006-mv3-remote-browser-verification.md`.

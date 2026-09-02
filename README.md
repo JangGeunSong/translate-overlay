@@ -42,10 +42,22 @@ Deterministic demo translation is excluded by default. For local development onl
 
 Set `localStorage.contextReaderDebug = "1"` on a test page to log reconciliation counters in development.
 
+## Browser integration verification
+
+Run the deterministic unpacked-extension regression with:
+
+```sh
+npm run test:browser
+```
+
+The command builds `dist/`, starts local fixture and linguistic-backend servers on loopback ports, launches Chrome or Edge with a temporary profile, and verifies the MV3 service-worker remote path while the browser Translator API is disabled. It covers remote failure containment, OFF/ON recovery, exact localhost host permission/CSP access, closed-shadow overlay behavior, source-markup preservation, and source-page interaction.
+
+Chrome or Edge must be installed in a standard location. Set `CONTEXT_READER_BROWSER` to an executable path when it is elsewhere. Every CDP connection, command, and state wait is bounded; failures include the last observed value and recent browser output. No network service or API credential is used.
+
 ## Linguistic backend
 
 Provide the variables documented in `.env.example`, keeping the real key out of Git, then run `npm run backend:start`. The backend implements `POST /translate`, `POST /interpret`, and `GET /health`. Its default production provider uses the OpenAI Responses API; `INTERPRETATION_PROVIDER=mock` supplies deterministic local translation and interpretation and is rejected when `NODE_ENV=production`.
 
 Deploy behind HTTPS, set `ALLOWED_EXTENSION_ORIGINS` to the exact installed extension origin, and add only that backend HTTPS origin to the production manifest. This repository contains neither deployment credentials nor a deployed endpoint.
 
-See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md), the [Phase 4 packet](docs/tasks/0004-production-e2e-and-public-qa.md), and the [Phase 5A packet](docs/tasks/0005-remote-translation-provider.md).
+See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md), the [Phase 5A packet](docs/tasks/0005-remote-translation-provider.md), and the [Phase 5B browser verification packet](docs/tasks/0006-mv3-remote-browser-verification.md).

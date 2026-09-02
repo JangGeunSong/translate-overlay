@@ -8,7 +8,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:browser": "npm run build && node scripts/browser-smoke.mjs",
     "qa:public": "node scripts/public-site-qa.mjs",
     "test:backend": "vitest run server",
     "test:provider:real": "node server/real-provider-smoke.mjs",
