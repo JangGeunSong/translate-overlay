@@ -86,7 +86,7 @@ The Node backend exposes the same timeout, CORS, rate-limit, normalized-error, a
 
 ## Context extraction and production interpretation
 
-Context collection is deterministic and bounded before provider invocation:
+Context collection is deterministic and bounded before provider invocation. Optional `previousParagraph`, `nextParagraph`, and `nearestHeading` values that are empty after normalization and bounding become `undefined` and are omitted from JSON requests, preserving the backend's non-empty-if-present contract:
 
 - selected text: 300 characters;
 - containing sentence: 600 characters;

@@ -36,6 +36,12 @@ RUN_REAL_PROVIDER_TEST=1 OPENAI_API_KEY=... npm run test:provider:real
 
 After a real deployment, a human must check `/health`, build with the deployed exact origin, configure both endpoint URLs, and exercise remote translation plus selection interpretation in the unpacked extension while browser translation is unavailable. The existing DOM preservation, page interaction, one-host, and OFF cleanup assertions remain the required regression boundary.
 
+## Phase 5D selection context regression fix
+
+The reported Railway/OpenAI MV3 selection request failed with HTTP 400 (`Invalid context field: previousParagraph.`). The collector now converts optional previous/next paragraph and nearest-heading values to `undefined` when normalization and bounding leave an empty string, so JSON omits them. Backend validation remains unchanged. Regression tests cover whitespace-only siblings, direct and nested headings, JSON omission, and the existing populated context case.
+
+Validation: `npm.cmd run verify` passed (15 test files, 51 tests, TypeScript, build, and manifest validation); `npm.cmd run test:browser` passed MV3 remote failure/recovery and local interpretation E2E. The `.cmd` entry point was used because PowerShell blocks `npm.ps1`. Live Railway/OpenAI E2E was not rerun for this fix.
+
 ## HUMAN_REQUIRED
 
 - Choose a hosting vendor and stable HTTPS domain.

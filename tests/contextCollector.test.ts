@@ -39,6 +39,34 @@ describe("context collection", () => {
     expect(JSON.stringify(context).length).toBeLessThan(3_500);
   });
 
+  it.each([
+    ["previousParagraph", "#target", "previous"],
+    ["nextParagraph", "#target + p", "next"],
+    ["nearestHeading", "h2", "heading"],
+    ["nearestHeading", "h2", "nested heading"],
+  ] as const)("omits normalized-empty %s (%s, %s)", (field, selector, kind) => {
+    const target = document.querySelector("#target")!;
+    const emptyElement = kind === "previous"
+      ? target.previousElementSibling!
+      : document.querySelector(selector)!;
+    emptyElement.textContent = " \n\t\u00a0 ";
+    if (kind === "nested heading") {
+      const wrapper = document.createElement("section");
+      emptyElement.replaceWith(wrapper);
+      wrapper.append(emptyElement);
+    }
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    const selection = getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const context = collectInterpretationContext(selection)!;
+    expect(context).not.toBeNull();
+    expect(context[field]).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(context))).not.toHaveProperty(field);
+  });
+
   it("never treats extension-owned selection as page context", () => {
     document.body.innerHTML = '<div data-context-reader-root><span id="owned">extension text</span></div>';
     const text = document.querySelector("#owned")!.firstChild!;
