@@ -1,8 +1,8 @@
-# Task 0007 — Phase 5C production backend readiness
+# Task 0007 — Phase 5C production backend readiness and Phase 5D live E2E
 
 ## Scope and result
 
-This task closes the repository-side production boundary without choosing a hosting vendor, creating infrastructure, deploying, or adding credentials. The provider chain, scheduler, classifier, cache, overlay, and source-DOM read-only architecture are unchanged.
+Phase 5C closed the repository-side production boundary without choosing a hosting vendor, creating infrastructure, deploying, or adding credentials. Phase 5D subsequently completed Railway public HTTPS deployment and real OpenAI/MV3 E2E verification. The deployment was removed after verification, so the service is currently offline. The provider chain, scheduler, classifier, cache, overlay, and source-DOM read-only architecture are unchanged.
 
 The existing backend remains a portable Node.js HTTP process designed for HTTPS termination by a generic deployment platform. `server/Dockerfile` is the optional container contract: it runs unprivileged, binds the injected `PORT`, and probes `GET /health`.
 
@@ -36,16 +36,19 @@ RUN_REAL_PROVIDER_TEST=1 OPENAI_API_KEY=... npm run test:provider:real
 
 After a real deployment, a human must check `/health`, build with the deployed exact origin, configure both endpoint URLs, and exercise remote translation plus selection interpretation in the unpacked extension while browser translation is unavailable. The existing DOM preservation, page interaction, one-host, and OFF cleanup assertions remain the required regression boundary.
 
-## Phase 5D selection context regression fix
+## Phase 5D deployment, selection context fix, and live E2E
 
-The reported Railway/OpenAI MV3 selection request failed with HTTP 400 (`Invalid context field: previousParagraph.`). The collector now converts optional previous/next paragraph and nearest-heading values to `undefined` when normalization and bounding leave an empty string, so JSON omits them. Backend validation remains unchanged. Regression tests cover whitespace-only siblings, direct and nested headings, JSON omission, and the existing populated context case.
+Railway public HTTPS deployment, `/health`, and exact Chrome extension origin CORS verification succeeded. Real `/translate` and `/interpret` requests through the Railway backend to OpenAI returned successful translations and interpretations. MV3 extension remote translation also worked on the real Dictionary.com page.
 
-Validation: `npm.cmd run verify` passed (15 test files, 51 tests, TypeScript, build, and manifest validation); `npm.cmd run test:browser` passed MV3 remote failure/recovery and local interpretation E2E. The `.cmd` entry point was used because PowerShell blocks `npm.ps1`. Live Railway/OpenAI E2E was not rerun for this fix.
+The initial Railway/OpenAI MV3 selection interpretation request failed with HTTP 400 (`Invalid context field: previousParagraph.`) because the collector supplied `previousParagraph: ""`. The collector now converts optional `previousParagraph`, `nextParagraph`, and `nearestHeading` values to `undefined` when normalization and bounding leave an empty string, so JSON omits them. Backend validation remains unchanged. Regression tests cover whitespace-only siblings, direct and nested headings, JSON omission, and the existing populated context case.
+
+Validation after the fix: `npm.cmd run verify` passed (15 test files, 51 tests, TypeScript, build, and manifest validation); `npm.cmd run test:browser` passed MV3 remote failure/recovery and local interpretation E2E; `git diff --check` passed. The `.cmd` entry point was used because PowerShell blocks `npm.ps1`. The live Railway/OpenAI browser E2E was rerun after the fix and confirmed both translation and selection interpretation working on Dictionary.com.
+
+After verification, the Railway deployment was removed using Remove. The service is currently offline; successful E2E verification does not imply an active public service or completed long-term operational protections.
 
 ## HUMAN_REQUIRED
 
-- Choose a hosting vendor and stable HTTPS domain.
-- Provision TLS-capable infrastructure and supply the production OpenAI credential through its secret environment.
-- Determine the stable distributed extension ID or IDs and place those exact origins in backend CORS.
-- Select and configure deployment-level distributed rate limiting/abuse controls appropriate to expected traffic.
-- Run the opt-in real-provider smoke and post-deployment browser E2E; neither was run without a credential and deployed origin.
+- Restore an HTTPS deployment and server-side OpenAI credential before resuming public service.
+- Maintain exact backend CORS origins for the stable distributed extension ID or IDs; the tested Chrome extension origin passed Phase 5D validation.
+- Implement deployment-level distributed abuse protection and durable rate limiting appropriate to long-term public traffic; these remain incomplete.
+- Revalidate health, CORS, and live translation/selection browser E2E when redeploying. Phase 5D live E2E is complete.
