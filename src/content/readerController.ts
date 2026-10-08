@@ -24,6 +24,16 @@ const MUTATION_DEBOUNCE_MS = 120;
 const MUTATION_MAX_WAIT_MS = 500;
 const VIEWPORT_READY_RATIO = 0.8;
 
+interface SelectionSnapshot {
+  context: InterpretationContext;
+  contextKey: string;
+  startNode: Node;
+  startOffset: number;
+  endNode: Node;
+  endOffset: number;
+  rect: DOMRect;
+}
+
 export interface ReaderDiagnostics {
   reconciliations: number;
   mutationBatches: number;
@@ -126,6 +136,10 @@ export class ReaderController {
   private readerStartedAt = 0;
   private unsubscribeStatus?: () => void;
   private activeTranslationMode?: ProviderStatus["mode"];
+  private activationGeneration = 0;
+  private interpretationRequestId = 0;
+  private selectionTimer?: number;
+  private selectionSnapshot?: SelectionSnapshot;
 
   constructor(
     private readonly analyzer: PageAnalyzer,
@@ -145,6 +159,7 @@ export class ReaderController {
 
   setEnabled(enabled: boolean): void {
     if (enabled === this.enabled) return;
+    this.activationGeneration += 1;
     this.enabled = enabled;
     if (enabled) this.start();
     else this.stop();
@@ -160,6 +175,9 @@ export class ReaderController {
 
   private start(): void {
     this.resetActivationDiagnostics();
+    // A queued browser selectionchange from before activation must not revive
+    // the previous activation's action. Wait for a new selection identity.
+    this.selectionSnapshot = this.readSelection();
     this.activeTranslationMode = undefined;
     this.readerStartedAt = performance.now();
     this.renderer = new OverlayRenderer(() => undefined);
@@ -189,6 +207,7 @@ export class ReaderController {
     addEventListener("hashchange", this.onNavigation);
     document.fonts?.addEventListener("loadingdone", this.onLayoutShift);
     document.addEventListener("mouseup", this.onMouseUp);
+    document.addEventListener("selectionchange", this.onSelectionChange);
   }
 
   private resetActivationDiagnostics(): void {
@@ -202,6 +221,7 @@ export class ReaderController {
   }
 
   private stop(): void {
+    this.invalidateSelection();
     this.scheduler.clear();
     this.observer?.disconnect();
     this.resizeObserver?.disconnect();
@@ -212,6 +232,7 @@ export class ReaderController {
     removeEventListener("hashchange", this.onNavigation);
     document.fonts?.removeEventListener("loadingdone", this.onLayoutShift);
     document.removeEventListener("mouseup", this.onMouseUp);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
     if (this.scanTimer) clearTimeout(this.scanTimer);
     if (this.mutationTimer) clearTimeout(this.mutationTimer);
     if (this.positionFrame) cancelAnimationFrame(this.positionFrame);
@@ -253,6 +274,8 @@ export class ReaderController {
   private readonly onNavigation = (): void => this.scheduleFullReconcile(50);
 
   private readonly onMutations = (records: MutationRecord[]): void => {
+    if (!this.enabled) return;
+    if (this.selectionSnapshot && !this.isSelectionCurrent(this.selectionSnapshot)) this.invalidateSelection();
     for (const record of records) {
       if (record.target instanceof Element && record.target.closest("[data-context-reader-root]")) continue;
       if (record.type === "attributes") this.addAffectedRoot(record.target);
@@ -287,18 +310,57 @@ export class ReaderController {
     this.targetedReconcile(roots);
   };
 
-  private readonly onMouseUp = (): void => {
+  private readSelection(): SelectionSnapshot | undefined {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    if (!range.startContainer.isConnected || !range.endContainer.isConnected) return;
+    const context = collectInterpretationContext(selection, TARGET_LANGUAGE);
+    if (!context) return;
+    return {
+      context, contextKey: JSON.stringify(context),
+      startNode: range.startContainer, startOffset: range.startOffset,
+      endNode: range.endContainer, endOffset: range.endOffset,
+      rect: range.getBoundingClientRect(),
+    };
+  }
+
+  private isSelectionCurrent(snapshot: SelectionSnapshot): boolean {
+    const current = this.readSelection();
+    return Boolean(current && snapshot.startNode === current.startNode &&
+      snapshot.startOffset === current.startOffset && snapshot.endNode === current.endNode &&
+      snapshot.endOffset === current.endOffset && snapshot.contextKey === current.contextKey);
+  }
+
+  private invalidateSelection(): void {
+    if (this.selectionTimer !== undefined) clearTimeout(this.selectionTimer);
+    this.selectionTimer = undefined;
+    this.selectionSnapshot = undefined;
+    this.interpretationRequestId += 1;
+    this.renderer?.clearSelectionUi();
+    this.renderer?.clearExplanation();
+  }
+
+  private readonly onMouseUp = (event: MouseEvent): void => {
+    // Closed-shadow events retarget to our host. Do not recreate the action
+    // when the user activates an extension control.
+    if (event.target instanceof Element && event.target.closest("[data-context-reader-root]")) return;
+    this.onSelectionChange();
+  };
+
+  private readonly onSelectionChange = (): void => {
     if (!this.enabled || !this.renderer) return;
-    window.setTimeout(() => {
-      const selection = document.getSelection();
-      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-        this.renderer?.clearSelectionUi();
-        return;
-      }
-      const context = collectInterpretationContext(selection, TARGET_LANGUAGE);
-      if (!context) return;
-      const rect = selection.getRangeAt(0).getBoundingClientRect();
-      this.renderer?.showSelectionAction(rect, () => void this.interpret(context));
+    if (this.selectionSnapshot && this.isSelectionCurrent(this.selectionSnapshot)) return;
+    this.invalidateSelection();
+    const snapshot = this.readSelection();
+    if (!snapshot) return;
+    this.selectionSnapshot = snapshot;
+    const generation = this.activationGeneration;
+    this.selectionTimer = window.setTimeout(() => {
+      this.selectionTimer = undefined;
+      if (!this.enabled || generation !== this.activationGeneration ||
+          this.selectionSnapshot !== snapshot || !this.isSelectionCurrent(snapshot)) return;
+      this.renderer?.showSelectionAction(snapshot.rect, () => void this.interpret(snapshot));
     }, 0);
   };
 
@@ -593,19 +655,30 @@ export class ReaderController {
     }
   }
 
-  private async interpret(context: InterpretationContext): Promise<void> {
-    if (!this.renderer) return;
+  private async interpret(snapshot: SelectionSnapshot): Promise<void> {
+    if (!this.enabled || !this.renderer || this.selectionSnapshot !== snapshot || !this.isSelectionCurrent(snapshot)) return;
+    const { context } = snapshot;
+    const generation = this.activationGeneration;
+    const requestId = ++this.interpretationRequestId;
+    const isCurrent = (): boolean => this.enabled && generation === this.activationGeneration &&
+      requestId === this.interpretationRequestId && this.selectionSnapshot === snapshot && this.isSelectionCurrent(snapshot);
+    const onClose = (): void => {
+      if (requestId === this.interpretationRequestId) this.interpretationRequestId += 1;
+    };
     const startedAt = performance.now();
     this.diagnostics.interpretationRequestCount += 1;
-    this.renderer.showExplanation(context, "선택한 표현과 주변 문맥을 확인하고 있습니다.", true);
+    this.renderer.showExplanation(context, "선택한 표현과 주변 문맥을 확인하고 있습니다.", true, undefined, onClose);
     try {
       const result = await this.provider.interpret(context);
+      if (!isCurrent()) return;
       this.diagnostics.interpretationSuccessCount += 1;
-      if (this.enabled) this.renderer?.showExplanation(context, result.explanation, false, result.provider);
+      this.renderer?.showExplanation(context, result.explanation, false, result.provider, onClose);
     } catch {
+      if (!isCurrent()) return;
       this.diagnostics.interpretationFailureCount += 1;
-      if (this.enabled) this.renderer?.showExplanation(context, "문맥 해석에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      this.renderer?.showExplanation(context, "문맥 해석에 실패했습니다. 잠시 후 다시 시도해 주세요.", false, undefined, onClose);
     } finally {
+      if (!isCurrent()) return;
       this.recordInterpretationLatency(performance.now() - startedAt);
       this.renderer?.setInterpretationDiagnostics({
         requests: this.diagnostics.interpretationRequestCount,

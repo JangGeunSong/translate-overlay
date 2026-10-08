@@ -19,6 +19,18 @@
         <div id="delayed-article"></div>
       </article>
       <aside><p>Related reading links</p></aside>
+      <section id="input-fixture">
+        <h2>Local search and options</h2>
+        <a id="local-link" href="#input-fixture">Inspect local search</a>
+        <button id="local-button" type="button">Update local counter</button>
+        <form id="local-form">
+          <label>Search <input id="search-input" name="search" type="search" required /></label>
+          <label><input id="local-check" type="checkbox" name="available" /> Available only</label>
+          <label>Sort <select id="local-select" name="sort"><option value="relevance">Relevance</option><option value="price">Price</option></select></label>
+          <button id="local-submit" type="submit">Search locally</button>
+        </form>
+        <p id="local-state">No local actions yet.</p>
+      </section>
       <section id="commerce">
         <h2>Subscription plans</h2>
         <p id="plan-state">Plan A costs $90 per month.</p>
@@ -40,6 +52,30 @@
     </main>
     <footer>Related reading links</footer>
     <script>
+      // All submissions stay in this fixture; counters are the site-owned oracle.
+      window.inputEvents = { link: 0, button: 0, input: 0, searchChange: 0, checkbox: 0, select: 0, invalid: 0, submit: 0, untrusted: 0 };
+      const countInput = (name, event) => {
+        window.inputEvents[name]++;
+        if (!event.isTrusted) window.inputEvents.untrusted++;
+      };
+      document.querySelector("#local-link").addEventListener("click", (event) => {
+        event.preventDefault(); countInput("link", event);
+        document.querySelector("#local-state").textContent = "Local link inspected.";
+      });
+      document.querySelector("#local-button").addEventListener("click", (event) => {
+        countInput("button", event);
+        document.querySelector("#local-state").textContent = `Local counter updated ${window.inputEvents.button}.`;
+      });
+      document.querySelector("#search-input").addEventListener("input", (event) => countInput("input", event));
+      document.querySelector("#search-input").addEventListener("change", (event) => countInput("searchChange", event));
+      document.querySelector("#search-input").addEventListener("invalid", (event) => countInput("invalid", event));
+      document.querySelector("#local-check").addEventListener("change", (event) => countInput("checkbox", event));
+      document.querySelector("#local-select").addEventListener("change", (event) => countInput("select", event));
+      document.querySelector("#local-form").addEventListener("submit", (event) => {
+        event.preventDefault(); countInput("submit", event);
+        window.localSubmission = Object.fromEntries(new FormData(event.currentTarget));
+        document.querySelector("#local-state").textContent = "Local search submitted: " + window.localSubmission.search;
+      });
       window.initialSourceMarkup = document.querySelector("#source").outerHTML;
       setTimeout(() => {
         document.querySelector("#delayed-article").innerHTML = "<p>Delayed article content is now available.</p>";

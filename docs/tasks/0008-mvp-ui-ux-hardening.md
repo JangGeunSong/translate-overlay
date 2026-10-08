@@ -1,6 +1,6 @@
 # Task 0008 — Phase 5F MVP UI/UX Hardening
 
-Status: execution preparation only; Human Approval pending. No implementation or verification PASS is claimed by this packet.
+Status: Phase 5F-1 implemented under the bounded task authorization; technical verification PASS on 2026-10-08. Overall Phase 5F release/manual acceptance remains open.
 
 ## Goal and baseline
 
@@ -58,7 +58,11 @@ Manual: Taobao와 다른 해외 쇼핑몰 1곳에서 검색 입력·제출 → �
 ## Evidence log
 
 - 2026-10-08: 실행 문서 준비. 제품 코드 변경 및 테스트/Factory/live journey 실행 없음.
-- Implementation results: pending.
-- Authoritative verification: not run for this phase.
-- Manual acceptance: not run for this phase.
-- Remaining blockers: implementation/verification 후 재현 근거로 갱신.
+- 2026-10-08 implementation: `readerController.ts`에 activation generation, request identity, source endpoint node/offset + bounded context identity를 추가했다. selectionchange와 source mutation에서 이전 action/popover를 무효화하며 늦은 success/failure/finally는 현재 UI/진단을 갱신하지 않는다. action timer를 추적/취소하고 활성화 이전 selection을 baseline으로 삼아 queued selectionchange가 이전 action을 재생성하지 않게 했다. close는 pending 요청을 무효화한다. 이미 전송한 provider 작업 자체는 취소하지 않으며 완료 결과를 무시한다.
+- Renderer: selection action/close/original-view button의 mouse-down 기본 focus 이동만 차단한다. 실제 pointer로 입력값 `books`를 선택한 뒤 original-view toggle을 누르면 focus가 source input에서 벗어나는 실패를 browser assertion으로 재현했고 수정 후 PASS했다. passive event forwarding/source DOM 변경은 없다. `contextCollector.ts`, translation scheduler/cache, classifier/provider와 Factory/5E는 변경하지 않았다.
+- Fixture/browser oracle: OFF와 ON에서 동일한 좌표 pointer + keyboard 행동을 실행한다. 기대 이벤트는 link 1, button 2, input 8, search change 1, checkbox change 1, select change 1, invalid 1, submit 1, untrusted 0이다. 최종 `books`, checked=true, price option, source input focus/selection `[0,5]`, fixture 내부 제출 payload와 site state를 확인했다. source markup과 MutationObserver 기록도 양쪽이 동일해 fixture 자신의 state mutation과 extension 변경을 구분한다. DOM `.click()`이나 값 직접 할당은 browser 행동 검증에 사용하지 않는다.
+- Lifecycle evidence: 16개 controller test가 A/B 역순 success/failure, 동일 문자열의 다른 offset, OFF→ON, close, source edit/replacement/removal, callback 취소, 실패/회복을 검증한다. 기존 translation generation 보호를 사용하여 old activation 실패와 현재 source의 역순 완료를 검증한다. 10회 pending ON/OFF 후 timer 0, observer/subscription 해제, 중복 요청/재조정 없음과 host cleanup을 검증한다. 실제 MV3 browser에서도 pointer drag 선택/해석/close와 pending translation/interpretation을 포함한 10회 ON/OFF를 실행해 OFF host 0, ON host 1, 늦은 완료 후 surface/action/popover 재등장 없음, OFF 중 추가 backend 작업 없음을 확인했다.
+- Authoritative verification: `npm.cmd run verify` → `npm.cmd run test:browser` PASS (67 tests / 16 files, TypeScript, build, MV3 manifest). `git diff --check` PASS. PowerShell의 npm.ps1 실행 정책 때문에 동일 npm script의 `.cmd` launcher를 사용했다. 의존성 변경/재설치 없음.
+- Browser evidence: Edge 154.0.4258.62, extension 0.4.0, fresh profile/default zoom, requested window 900×700, browser Translator disabled, production-remote adapter → loopback deterministic mock. 기존 native/remote fallback unit tests, backend failure/recovery 및 local interpretation E2E도 PASS. 외부 API/credential/배포/유료 호출 없음.
+- Manual acceptance: Taobao 및 두 번째 해외 쇼핑몰 journey 미실행. fixture PASS를 live journey/product acceptance로 간주하지 않는다.
+- Remaining release gate: 재현된 5F-1 미해결 blocker는 없다. dense commerce의 거래/편집 데이터 targeting, 핵심 문구 가독성, ancestor clipping/nested scroll은 이 bounded task에서 개선하거나 합격 판정하지 않았다. 후속 구현은 실제 재현·위반 acceptance·행동 영향·최소 범위·oracle이 확인된 release blocker에만 한정한다. 전체 5F 완료/5E 인계 판단에는 승인된 manual journey와 사람의 제품 수용성 판단이 필요하며, 자동 후속 task나 비핵심 polish를 추가하지 않는다.

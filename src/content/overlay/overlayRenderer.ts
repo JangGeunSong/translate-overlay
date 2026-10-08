@@ -123,6 +123,7 @@ export class OverlayRenderer {
     const toggle = document.createElement("button");
     toggle.className = "toggle";
     toggle.textContent = "원문 보기";
+    toggle.addEventListener("mousedown", (event) => event.preventDefault());
     toggle.addEventListener("click", () => {
       this.showingOriginal = !this.showingOriginal;
       this.surfaceLayer.hidden = this.showingOriginal;
@@ -284,12 +285,13 @@ export class OverlayRenderer {
     button.textContent = "맥락 해석";
     button.style.left = `${Math.min(Math.max(8, rect.left), innerWidth - 100)}px`;
     button.style.top = `${Math.min(innerHeight - 44, rect.bottom + 6)}px`;
+    button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", onRequest, { once: true });
     this.controlLayer.append(button);
     this.selectionAction = button;
   }
 
-  showExplanation(context: InterpretationContext, text: string, loading = false, provider?: string): void {
+  showExplanation(context: InterpretationContext, text: string, loading = false, provider?: string, onClose?: () => void): void {
     this.selectionAction?.remove();
     this.explanation?.remove();
     const popover = document.createElement("div");
@@ -302,7 +304,11 @@ export class OverlayRenderer {
     const close = document.createElement("button");
     close.className = "close";
     close.textContent = "닫기";
-    close.addEventListener("click", () => popover.remove());
+    close.addEventListener("mousedown", (event) => event.preventDefault());
+    close.addEventListener("click", () => {
+      this.clearExplanation();
+      onClose?.();
+    });
     header.append(title, close);
     const body = document.createElement("p");
     body.textContent = text;
@@ -317,6 +323,11 @@ export class OverlayRenderer {
   clearSelectionUi(): void {
     this.selectionAction?.remove();
     this.selectionAction = undefined;
+  }
+
+  clearExplanation(): void {
+    this.explanation?.remove();
+    this.explanation = undefined;
   }
 
   getSurfaceDiagnostics(): SurfaceDiagnostic[] {

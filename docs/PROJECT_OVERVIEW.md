@@ -66,6 +66,8 @@ Scroll always performs animation-frame geometry updates. Full visible-region dis
 
 Reader OFF disconnects observers, removes listeners/timers, invalidates in-flight request generations, clears active registrations, and removes the host. The bounded in-memory translation cache remains reusable during the content script's tab lifetime but cannot create presentation by itself.
 
+Phase 5F-1 gives selection interpretation its own activation generation and request identity. Selection identity includes connected source endpoint nodes/offsets and the bounded context snapshot. Selection changes and source replacement/removal/context changes invalidate pending actions and explanations; success, failure, and latency/diagnostic updates require the current identity. Closing an explanation invalidates its pending response. Selection-action timers are tracked and cancelled on invalidation/OFF; a pre-activation selection is a baseline, so a queued browser selection event cannot revive the previous activation's action. Keyboard selection changes use the same lifecycle. Provider requests already sent may finish, but stale results cannot recreate presentation.
+
 Development instrumentation is enabled with `localStorage.contextReaderDebug = "1"` and reports reconciliation counts, region classifications, surface creation/disposal, translation requests/cache hits, mutation batches, and elapsed reconciliation time.
 
 ## Translation and interpretation boundary
@@ -113,6 +115,8 @@ The only page-tree addition is one `<div data-context-reader-root>` appended to 
 
 Passive translation surfaces use `pointer-events: none`. Only the toolbar, selection action, and explanation popover accept pointer input.
 
+Pointer activation of the original-view toggle, selection action, and close button preserves source focus/selection by preventing those buttons' mouse-down default. Keyboard activation remains available. No passive-surface event forwarding or source DOM writes are used.
+
 Surfaces never exceed the current source rectangle height. Text wraps in ordinary regions, compact rectangles use one-line ellipsis, long translation density causes bounded font reduction with a 10 px floor, and the fixed viewport layer clips overflow. This favors preventing severe overlap over showing every translated character. The original-view toggle remains available for clipped content.
 
 ## Verification
@@ -122,6 +126,10 @@ The deterministic suite covers filtering, language hints, logical identity, sour
 The unpacked-extension regression uses `test-pages/fixture.html` in an installed Chromium browser. It validates delayed article insertion; subscription plan and price replacement; CSS hide/show; node removal; 25 rapid text changes; History API plus SPA route replacement; provider-mode UI; source preservation; page-button interaction; scroll survival; full cleanup; current-state-only re-enable; and one active host.
 
 Phase 5B extends that regression through the real unpacked MV3 service worker and a deterministic loopback backend. The browser Translator API is disabled with the Blink runtime-feature switch and verified unavailable before reader activation. The suite first injects transient backend failures, confirms the overlay and source interaction remain alive, then performs an OFF/ON request cycle and requires deterministic remote translations. A fresh-profile startup race is avoided by reloading the fixture only after the extension worker and endpoint configuration are ready. CDP discovery, WebSocket commands, page conditions, and cleanup are bounded and report their last observation plus recent browser output on failure. The test server uses a raised test-only rate limit so the intentional outage/recovery scenario is not conflated with the backend's separately tested production default limit.
+
+Phase 5F-1 adds an identical OFF/ON journey driven by CDP coordinate pointer events and keyboard events: local link/button activation, required-field validation, search entry/replacement/selection, checkbox, select, and fixture-only form submission. It asserts trusted event counts, values/checked/selected state, focus and selection offsets, submission data, site state, source markup, and source-mutation records. Comparing both runs permits the fixture's own mutations without attributing them to the extension. Original-view toggling and OFF/ON preserve the edited input state. Pointer-drag text selection and actual extension-control clicks exercise interpretation and pending-close behavior. Ten cycles hold both provider operations pending, turn OFF, finish success/failure responses, and require no host/surface/action/popover resurrection or further backend work while OFF.
+
+Sixteen deterministic controller regressions cover reversed A/B success/failure (including identical text at different offsets), activation changes, close, source edit/replacement/removal, scheduled-action cancellation, current failure/recovery, existing translation generation protection and reversed source completions, and ten cycles with timer/observer/subscription cleanup and no duplicate work. The collector, scheduler/cache, classifier, and provider architecture are unchanged.
 
 ## Phase 4 production and public-site findings
 
@@ -154,3 +162,5 @@ HUMAN_REQUIRED for long-term public operation: restore an HTTPS deployment with 
 ## Status
 
 MVP tasks `0001` through `0004`, Phase 5A task `0005`, Phase 5B task `0006`, and Phase 5C readiness plus Phase 5D Railway/OpenAI/MV3 E2E verification under task `0007` are complete. After the optional-context fix, `npm.cmd run verify` passed all 51 tests, `npm.cmd run test:browser` passed, and `git diff --check` passed. The live browser E2E rerun also passed. The Railway deployment was then removed; long-term public operation, including distributed abuse protection and durable rate limiting, remains incomplete. Phase 5C/5D evidence lives in `docs/tasks/0007-production-backend-readiness.md`.
+
+On 2026-10-08, Phase 5F-1 technical verification passed: `npm.cmd run verify` (67 tests, type check, build, MV3 manifest validation), followed by `npm.cmd run test:browser` (Edge 154.0.4258.62, extension 0.4.0, local fake backend), and `git diff --check`. The browser test reproduced and fixed source focus loss from the original-view control. No unresolved reproduced 5F-1 blocker remains. This is not overall Phase 5F completion: dense-commerce semantic/geometry gates and Taobao/second-store manual acceptance remain unverified, with no new site-specific blocker inferred from fixture success. See active packet `docs/tasks/0008-mvp-ui-ux-hardening.md`. No live service, paid provider, deployment, Factory workflow, or Phase 5E control was changed.

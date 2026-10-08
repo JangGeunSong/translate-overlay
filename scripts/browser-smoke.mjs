@@ -263,8 +263,115 @@ async function clickShadowClass(page, className) {
     return index >= 0 && attributes[index + 1]?.includes(className);
   });
   if (!node) throw new Error(`Shadow control not found: ${className}`);
-  const resolved = await page.send("DOM.resolveNode", { nodeId: node.nodeId });
-  await page.send("Runtime.callFunctionOn", { objectId: resolved.object.objectId, functionDeclaration: "function(){ this.click(); }" });
+  const { model } = await page.send("DOM.getBoxModel", { nodeId: node.nodeId });
+  await pointerClick(page, (model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2);
+}
+
+async function pointerClick(page, x, y) {
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+async function clickSource(page, selector) {
+  const point = await evaluate(page, `(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    element.scrollIntoView({block: "center"});
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await pointerClick(page, point.x, point.y);
+}
+
+async function key(page, key, code, windowsVirtualKeyCode, modifiers = 0) {
+  const params = { key, code, windowsVirtualKeyCode, modifiers };
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", ...params,
+    ...(key === "Enter" ? { text: "\r" } : key.length === 1 && modifiers === 0 ? { text: key } : {}) });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
+}
+
+async function inputState(page) {
+  return evaluate(page, `({
+    value: document.querySelector("#search-input").value,
+    checked: document.querySelector("#local-check").checked,
+    selected: [...document.querySelector("#local-select").options].map(option => option.selected),
+    focus: document.activeElement.id,
+    selection: [document.querySelector("#search-input").selectionStart, document.querySelector("#search-input").selectionEnd],
+    events: window.inputEvents, submission: window.localSubmission,
+    mutations: window.sourceMutations,
+    state: document.querySelector("#local-state").textContent,
+    markup: document.querySelector("#source").outerHTML
+  })`);
+}
+
+async function inputJourney(page) {
+  await evaluate(page, `(() => {
+    window.sourceMutations = [];
+    window.inputObserver = new MutationObserver(records => {
+      for (const record of records) window.sourceMutations.push({
+        type: record.type, target: record.target.id || record.target.nodeName,
+        attribute: record.attributeName, oldValue: record.oldValue,
+        added: [...record.addedNodes].map(node => node.textContent),
+        removed: [...record.removedNodes].map(node => node.textContent)
+      });
+    });
+    window.inputObserver.observe(document.querySelector("#source"), {
+      subtree: true, childList: true, attributes: true, characterData: true,
+      attributeOldValue: true, characterDataOldValue: true
+    });
+  })()`);
+  await clickSource(page, "#local-link");
+  await clickSource(page, "#local-button");
+  await key(page, "Enter", "Enter", 13);
+  await clickSource(page, "#local-submit");
+  const invalid = await inputState(page);
+  if (invalid.events.invalid !== 1 || invalid.events.submit !== 0 || invalid.focus !== "search-input") {
+    throw new Error(`Native validation/focus failed: ${JSON.stringify(invalid)}`);
+  }
+  for (const letter of "tea") await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+  await key(page, "Home", "Home", 36, 8);
+  for (const letter of "books") await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+  await key(page, "ArrowLeft", "ArrowLeft", 37, 8);
+  await key(page, "ArrowLeft", "ArrowLeft", 37, 8);
+  const editing = await inputState(page);
+  if (editing.value !== "books" || editing.focus !== "search-input" || JSON.stringify(editing.selection) !== "[3,5]") {
+    throw new Error(`Keyboard editing/selection failed: ${JSON.stringify(editing)}`);
+  }
+  await clickSource(page, "#local-check");
+  await key(page, "Tab", "Tab", 9);
+  await key(page, "End", "End", 35);
+  await key(page, "Tab", "Tab", 9);
+  await key(page, "Enter", "Enter", 13);
+  await clickSource(page, "#search-input");
+  await key(page, "a", "KeyA", 65, 2);
+  const result = await inputState(page);
+  const expectedEvents = { link: 1, button: 2, input: 8, searchChange: 1, checkbox: 1, select: 1, invalid: 1, submit: 1, untrusted: 0 };
+  if (JSON.stringify(result.events) !== JSON.stringify(expectedEvents) || result.value !== "books" ||
+      !result.checked || JSON.stringify(result.selected) !== "[false,true]" ||
+      result.focus !== "search-input" || JSON.stringify(result.selection) !== "[0,5]" ||
+      JSON.stringify(result.submission) !== JSON.stringify({ search: "books", available: "on", sort: "price" }) ||
+      result.state !== "Local search submitted: books") {
+    throw new Error(`Real input journey failed: ${JSON.stringify(result)}`);
+  }
+  await evaluate(page, "window.inputObserver.disconnect()");
+  return { invalid, editing, result };
+}
+
+async function selectWord(page, word) {
+  // Read Range geometry only; selection itself comes from a real pointer drag.
+  const points = await evaluate(page, `(() => {
+    const element = [...document.querySelectorAll("#article p")].find(element => element.textContent.includes(${JSON.stringify(word)}));
+    element.scrollIntoView({block: "center"});
+    const node = element.firstChild;
+    const start = node.textContent.indexOf(${JSON.stringify(word)});
+    const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + ${word.length});
+    const rect = range.getBoundingClientRect();
+    return { x: rect.left, end: rect.right, y: rect.top + rect.height / 2 };
+  })()`);
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x: points.x, y: points.y, button: "left", clickCount: 1 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: points.end, y: points.y, button: "left", buttons: 1 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: points.end, y: points.y, button: "left", clickCount: 1 });
+  await waitForCondition(() => evaluate(page, "getSelection().toString()"), text => text === word, "pointer text selection");
 }
 
 const fixture = await readFile("test-pages/fixture.html");
@@ -276,15 +383,31 @@ let recordedContext;
 let rejectTranslations = true;
 let translationFailures = 0;
 let translationSuccesses = 0;
+let interpretationRequests = 0;
+let holdInterpretations = false;
+let holdTranslations = false;
+const pendingInterpretations = [];
+const pendingTranslations = [];
+function hold(queue) {
+  const entry = { settled: false };
+  queue.push(entry);
+  return new Promise((resolve, reject) => {
+    entry.resolve = resolve;
+    entry.reject = () => reject(new Error("Deterministic stale request failure."));
+  }).finally(() => { entry.settled = true; });
+}
 const testAllowedOrigins = [];
 const mockProvider = createMockInterpretationProvider({ delayMs: 150 });
 const interpretationServer = createServer(createInterpretationHandler({ allowedOrigins: testAllowedOrigins, provider: {
   ...mockProvider,
   async interpret(context, options) {
+    interpretationRequests += 1;
     recordedContext = context;
+    if (holdInterpretations) await hold(pendingInterpretations);
     return mockProvider.interpret(context, options);
   },
   async translate(request, options) {
+    if (holdTranslations) await hold(pendingTranslations);
     if (rejectTranslations) {
       translationFailures += 1;
       throw new Error("Deterministic transient translation failure.");
@@ -402,6 +525,13 @@ try {
     (text) => text.includes("Delayed article content"),
     "fixture delayed article insertion",
   );
+  const offInput = await inputJourney(page);
+  await page.send("Page.reload", { ignoreCache: true });
+  await waitForCondition(
+    () => evaluate(page, `document.querySelector("#delayed-article")?.textContent ?? ""`),
+    (text) => text.includes("Delayed article content"),
+    "fresh fixture for identical ON input journey",
+  );
   await evaluate(page, `window.sourceBeforeReader = document.querySelector("#source").outerHTML`);
   await waitForCondition(
     () => setReader(true).then(() => true).catch(() => false),
@@ -422,7 +552,8 @@ try {
   if (enabledState.roots !== 1 || !enabledState.sourceUntouched || translationFailures < 1) {
     throw new Error(`Remote failure containment invariant failed: ${JSON.stringify({ ...enabledState, translationFailures })}`);
   }
-  const failureInteraction = await evaluate(page, `document.querySelector("#interaction-check").click(); document.body.dataset.buttonWorked`);
+  await clickSource(page, "#interaction-check");
+  const failureInteraction = await evaluate(page, `document.body.dataset.buttonWorked`);
   if (failureInteraction !== "true") throw new Error("Underlying page interaction failed while the remote backend was unavailable.");
 
   rejectTranslations = false;
@@ -471,9 +602,23 @@ try {
     throw new Error("Source markup changed while rendering recovered remote translations.");
   }
 
+  const onInput = await inputJourney(page);
+  if (JSON.stringify(onInput) !== JSON.stringify(offInput)) {
+    throw new Error(`OFF/ON site state, markup, focus, selection or event counts differ: ${JSON.stringify({ offInput, onInput })}`);
+  }
+  await clickShadowClass(page, "toggle");
+  if (JSON.stringify(await inputState(page)) !== JSON.stringify(onInput.result)) throw new Error("Original-view control changed source focus/selection or state.");
+  await clickShadowClass(page, "toggle");
+  if (JSON.stringify(await inputState(page)) !== JSON.stringify(onInput.result)) throw new Error("Translation-view control changed source focus/selection or state.");
+  await setReader(false);
+  if (JSON.stringify(await inputState(page)) !== JSON.stringify(onInput.result)) throw new Error("OFF changed user input state.");
+  await setReader(true);
+  if (JSON.stringify(await inputState(page)) !== JSON.stringify(onInput.result)) throw new Error("ON changed user input state.");
+  await evaluate(page, `document.querySelector("#article").scrollIntoView({block:"start"})`);
+
   const initialSources = await waitForCondition(
     () => getSurfaceSources(page),
-    (sources) => sources.includes("Plan A costs $90 per month.") && sources.includes("Delayed article content is now available."),
+    (sources) => sources.includes("Article documentation guide") && sources.includes("Plan A costs $90 per month.") && sources.includes("Delayed article content is now available."),
     "initial article and subscription surfaces",
   );
   if (!initialSources.includes("Article documentation guide")) throw new Error("Article heading was not represented.");
@@ -485,7 +630,7 @@ try {
     throw new Error(`Auxiliary classification failed: ${JSON.stringify(semantics)}`);
   }
 
-  await evaluate(page, `document.querySelector("#change-plan").click()`);
+  await clickSource(page, "#change-plan");
   const replacedSources = await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => sources.includes("Plan B costs $120 per month."),
@@ -495,27 +640,27 @@ try {
   const uniqueExpectedSources = replacedSources.filter((source) => source !== "Related reading links");
   if (new Set(uniqueExpectedSources).size !== uniqueExpectedSources.length) throw new Error("Duplicate overlays appeared after replacement.");
 
-  await evaluate(page, `document.querySelector("#toggle-conditional").click()`);
+  await clickSource(page, "#toggle-conditional");
   await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => !sources.includes("This option is currently visible."),
     "hidden region disposal",
   );
-  await evaluate(page, `document.querySelector("#toggle-conditional").click()`);
+  await clickSource(page, "#toggle-conditional");
   await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => sources.includes("This option is currently visible."),
     "hidden region restoration",
   );
 
-  await evaluate(page, `document.querySelector("#remove-offer").click()`);
+  await clickSource(page, "#remove-offer");
   await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => !sources.includes("This temporary offer can be removed."),
     "removed region disposal",
   );
 
-  await evaluate(page, `document.querySelector("#rapid-mutations").click()`);
+  await clickSource(page, "#rapid-mutations");
   const rapidSources = await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => sources.includes("Rapid final state."),
@@ -525,7 +670,7 @@ try {
     throw new Error("Rapid mutations left stale surfaces.");
   }
 
-  await evaluate(page, `document.querySelector("#spa-view").scrollIntoView({block:"center"}); document.querySelector("#navigate-spa").click()`);
+  await clickSource(page, "#navigate-spa");
   const spaSources = await waitForCondition(
     () => getSurfaceSources(page),
     (sources) => sources.includes("SPA details route") && sources.includes("Current client-side route is details."),
@@ -535,7 +680,8 @@ try {
     throw new Error("SPA navigation left stale route overlays.");
   }
 
-  const interactionWorked = await evaluate(page, `document.querySelector("#interaction-check").click(); document.body.dataset.buttonWorked`);
+  await clickSource(page, "#interaction-check");
+  const interactionWorked = await evaluate(page, `document.body.dataset.buttonWorked`);
   if (interactionWorked !== "true") throw new Error("Underlying page button did not work.");
   await evaluate(page, "scrollTo(0, document.body.scrollHeight)");
   await delay(300);
@@ -569,15 +715,14 @@ try {
     throw new Error("Re-enable resurrected stale overlays.");
   }
 
-  await evaluate(page, `(() => {
-    const node = [...document.querySelectorAll("#article p")].find((element) => element.textContent.includes("shelved")).firstChild;
-    const start = node.textContent.indexOf("shelved");
-    const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + 7);
-    const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
-    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  })()`);
+  await selectWord(page, "shelved");
   await delay(50);
+  const selectionFocus = await evaluate(page, "document.activeElement.tagName");
   await clickShadowClass(page, "selection-action");
+  if (await evaluate(page, "getSelection().toString()") !== "shelved" ||
+      await evaluate(page, "document.activeElement.tagName") !== selectionFocus) {
+    throw new Error("Interpretation action changed source selection/focus.");
+  }
   await waitForCondition(async () => {
     const flattened = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
     return flattened.nodes.map((node) => node.nodeValue ?? "").join(" ");
@@ -594,9 +739,60 @@ try {
     throw new Error(`Translation latency metrics were not exposed: ${JSON.stringify(progress)}`);
   }
 
+  // Close a pending explanation using a real pointer, then finish the response.
+  holdInterpretations = true;
+  await selectWord(page, "proposal");
+  await delay(50);
+  await clickShadowClass(page, "selection-action");
+  await waitForCondition(() => pendingInterpretations.length, count => count === 1, "held interpretation before close");
+  await clickShadowClass(page, "close");
+  const metricsBeforeCloseResponse = await evaluate(page, `document.querySelector("[data-context-reader-root]").dataset.interpretationDiagnostics`);
+  pendingInterpretations[0].resolve();
+  await delay(300);
+  const closedTree = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+  if (closedTree.nodes.some(node => (node.attributes ?? []).includes("explanation")) ||
+      await evaluate(page, `document.querySelector("[data-context-reader-root]").dataset.interpretationDiagnostics`) !== metricsBeforeCloseResponse ||
+      await evaluate(page, "getSelection().toString()") !== "proposal") {
+    throw new Error("Closed explanation reappeared, changed diagnostics or lost the source selection.");
+  }
+
+  holdTranslations = true;
+  for (let cycle = 0; cycle < 10; cycle++) {
+    await setReader(true);
+    if (await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 1) throw new Error(`Duplicate host in cycle ${cycle}.`);
+    const previousTranslations = pendingTranslations.length;
+    await clickSource(page, "#local-button"); // site-owned, unique text mutation
+    await waitForCondition(() => pendingTranslations.length, count => count > previousTranslations, `pending translation in cycle ${cycle}`);
+    const previousInterpretations = pendingInterpretations.length;
+    await selectWord(page, cycle % 2 ? "proposal" : "shelved");
+    await delay(50);
+    await clickShadowClass(page, "selection-action");
+    await waitForCondition(() => pendingInterpretations.length, count => count === previousInterpretations + 1, `one interpretation in cycle ${cycle}`);
+    await setReader(false);
+    pendingInterpretations.at(-1)[cycle % 2 ? "reject" : "resolve"]();
+    for (const pending of pendingTranslations.filter(entry => !entry.settled)) pending.resolve();
+    await delay(350);
+    const offTree = await page.send("DOM.getFlattenedDocument", { depth: -1, pierce: true });
+    if (await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 0 ||
+        offTree.nodes.some(node => (node.attributes ?? []).some(value => /^(translation-surface|selection-action|explanation)( |$)/u.test(value)))) {
+      throw new Error(`Pending work recreated presentation after OFF in cycle ${cycle}.`);
+    }
+  }
+  holdTranslations = false;
+  holdInterpretations = false;
+  const requestCounts = [translationSuccesses + translationFailures, interpretationRequests];
+  await clickSource(page, "#local-button");
+  await selectWord(page, "shelved");
+  await delay(600);
+  if (JSON.stringify(requestCounts) !== JSON.stringify([translationSuccesses + translationFailures, interpretationRequests]) ||
+      await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 0) {
+    throw new Error("Reader OFF retained work registrations.");
+  }
+
   page.close();
   worker.close();
-  console.log(`Browser regression passed with MV3 remote failure/recovery and local interpretation E2E. Metrics: ${JSON.stringify({ translation: progress, interpretation: interpretationMetrics, backend: { translationFailures, translationSuccesses } })}`);
+  const browserVersion = await browser.send("Browser.getVersion");
+  console.log(`Browser regression passed: identical trusted OFF/ON inputs and source mutations, MV3 failure/recovery, pointer selection/close, and ten pending ON/OFF cycles. Metrics: ${JSON.stringify({ browser: browserVersion.product, extension: manifest.version, translation: progress, interpretation: interpretationMetrics, backend: { translationFailures, translationSuccesses } })}`);
 } catch (error) {
   const details = browserOutput.trim() ? `\nBrowser output:\n${browserOutput.trim()}` : "";
   throw new Error(`Browser integration failed: ${error instanceof Error ? error.message : String(error)}${details}`, { cause: error });
