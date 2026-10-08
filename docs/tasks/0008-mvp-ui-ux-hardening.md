@@ -90,3 +90,29 @@ Manual: Taobao와 다른 해외 쇼핑몰 1곳에서 검색 입력·제출 → �
 - Browser evidence: Edge 154.0.4258.62, extension 0.4.0, fresh profile/default zoom, requested window 900×700, browser Translator disabled, production-remote adapter → loopback deterministic mock. 기존 native/remote fallback unit tests, backend failure/recovery 및 local interpretation E2E도 PASS. 외부 API/credential/배포/유료 호출 없음.
 - Manual acceptance: Taobao 및 두 번째 해외 쇼핑몰 journey 미실행. fixture PASS를 live journey/product acceptance로 간주하지 않는다.
 - Remaining release gate: 재현된 5F-1 미해결 blocker는 없다. dense commerce의 거래/편집 데이터 targeting, 핵심 문구 가독성, ancestor clipping/nested scroll은 이 bounded task에서 개선하거나 합격 판정하지 않았다. 후속 구현은 실제 재현·위반 acceptance·행동 영향·최소 범위·oracle이 확인된 release blocker에만 한정한다. 전체 5F 완료/5E 인계 판단에는 승인된 manual journey와 사람의 제품 수용성 판단이 필요하며, 자동 후속 task나 비핵심 polish를 추가하지 않는다.
+
+
+## Phase 5F-3 real-site essential-text regression fix
+
+Medium manual diagnostics reported browser-translator results for 19 regions but 18 hidden surfaces: heading source-overflow, navigation overlapping-neighbour, button translation-overflow, and short Write/Sign in labels hidden without a reason. Footer outside the viewport is not a release defect.
+
+The fix uses source content space (including link padding within its original hit target) and visible glyph ink instead of requiring all ink inside the element line-height. Horizontal ink outside the element must remain inside its containing block. Ancestor clipping, uncertain backgrounds, complex geometry, mixed controls, real neighbouring text/replaced elements and hit-test occlusion still guard the candidate. Empty overlapping container rectangles alone no longer reject text. Optional extra fitting space falls back to original ink bounds if unsafe.
+
+Short UI is no longer suppressed solely by width <48px or height <16px. Full-translation fitting decides visibility. Compact controls below 48px may reduce by at most 25%, with a 10px floor; other text retains the 12px/80% policy. All hidden paths now record a reason, including offscreen/empty, source-hidden, original-view and disconnected. These normal lifecycle reasons are distinguished from safety rejection.
+
+Completed retains its linguistic-result count. displayed/viewportDisplayed count actually visible surfaces, and viewportReady uses visible READING/UI coverage rather than cached reading output. Toolbar and host diagnostics separate results from presentation and refresh on reposition/original-view changes. First-reading timing also requires display.
+
+Generic editorial header coverage adds large short-line-height text, overlapping empty wrappers, padded links, narrow short labels and a longer button translation. The browser oracle requires all seven editorial translations simultaneously visible, plus the seven existing core translations. It retains five intentional original cases (partial clip, gradient, unreadable tiny badge, protected-value occlusion, excessive expansion), actual pointer/keyboard/form state and source/closed-host/OFF checks.
+
+Targeted unit/type checks passed. A Chrome rendering-only run using the actual production controller/renderer with a deterministic provider passed fourteen required translations, protected geometry, clipping and identical trusted OFF/ON interactions. scripts/rendering-regression.mjs makes this check repeatable after build; it does not establish MV3/provider E2E. Edge exited before its debug endpoint and Chrome did not load the unpacked extension worker in this environment. Full authoritative verification is recorded separately below; no Factory or 5F-4 logic is changed by this fix. Medium live recheck remains required and fixture success is not labelled live PASS.
+
+
+### Final regression verification results
+
+- Targeted surface/invariant tests: 19 PASS; targeted surface/lifecycle tests: 36 PASS.
+- Final full TypeScript/unit validation: 146 tests / 18 files PASS. The single full verify invocation then hit a log-file lock because its log was mistakenly placed in dist, which build removes. The already-passing full tests were not repeated. Remaining build and manifest checks were completed successfully after moving logs outside dist.
+- Repeatable rendering-only command: node scripts/rendering-regression.mjs, Chrome 154, PASS. Actual production controller/renderer, deterministic provider, fourteen required translations, seven editorial title/navigation/button translations simultaneously visible, protected geometry, retained safety exclusions and trusted OFF/ON pointer/keyboard/form/source state. No billable calls.
+- Existing authoritative MV3 browser suite: FAIL before assertions, Edge exited with code 0 before opening DevTools. A separate Chrome MV3 attempt did not load the unpacked extension worker. This is an environment blocker, not an MV3 PASS and not proof of a product regression. No broad startup workaround or 5F-4 repair was added.
+- git diff --check PASS. Existing committed targeting/adaptive/dynamic work was retained; Factory, provider chain and transaction classifier were not modified.
+- Intentional hidden cases remain: outside viewport, original-view/disconnected/hidden source, actual overlapping price or control content, partial clipping, uncertain/complex background/geometry, unreadable tiny decorative badge and translations too long for safe bounds. If one of these affects essential text on a live site it remains an acceptance blocker, not an automatic waiver.
+- No essential-text hiding remains in the generic regression fixture. Medium live recheck has not been performed; reload the built extension before checking the same title/menu/button and displayed diagnostics. Do not mark overall Phase 5F or beta release complete from these results.

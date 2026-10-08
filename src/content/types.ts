@@ -82,6 +82,9 @@ export interface ProviderStatus {
 export interface TranslationProgress {
   total: number;
   completed: number;
+  displayed?: number;
+  viewportTotal?: number;
+  viewportDisplayed?: number;
   queued: number;
   translating: number;
   failed: number;

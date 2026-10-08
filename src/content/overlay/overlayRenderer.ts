@@ -31,6 +31,7 @@ export interface SurfaceDiagnostic {
   compact: boolean;
   suppressed: boolean;
   semanticClass: TextRegion["semanticClass"];
+  suppressionReason: string;
 }
 
 export class OverlayRenderer {
@@ -125,7 +126,7 @@ export class OverlayRenderer {
     toggle.addEventListener("click", () => {
       this.showingOriginal = !this.showingOriginal;
       this.surfaceLayer.hidden = this.showingOriginal;
-      if (!this.showingOriginal) this.reposition();
+      this.reposition();
       toggle.textContent = this.showingOriginal ? "번역 보기" : "원문 보기";
       onToggleOriginal(this.showingOriginal);
     });
@@ -149,11 +150,14 @@ export class OverlayRenderer {
     } else if (progress.queued + progress.translating > 0) {
       this.progressLabel.textContent = `번역 중 · ${progress.completed}/${progress.total}`;
     } else if (progress.viewportReady) {
-      this.progressLabel.textContent = `현재 화면 준비됨 · ${progress.completed}/${progress.total}`;
+      this.progressLabel.textContent = `현재 화면 준비됨 · 표시 ${progress.viewportDisplayed}/${progress.viewportTotal}`;
     } else {
-      this.progressLabel.textContent = `원문 표시 중 · ${progress.completed}/${progress.total}`;
+      this.progressLabel.textContent = `번역 표시 ${progress.viewportDisplayed}/${progress.viewportTotal} · 결과 ${progress.completed}/${progress.total}`;
     }
     this.progressLabel.dataset.completed = String(progress.completed);
+    this.progressLabel.dataset.displayed = String(progress.displayed ?? 0);
+    this.progressLabel.dataset.viewportDisplayed = String(progress.viewportDisplayed ?? 0);
+    this.progressLabel.dataset.viewportTotal = String(progress.viewportTotal ?? 0);
     this.progressLabel.dataset.total = String(progress.total);
     this.progressLabel.dataset.viewportReady = String(progress.viewportReady);
     this.progressLabel.dataset.timeToFirstTranslation = String(progress.timeToFirstTranslationMs ?? "");
@@ -225,24 +229,38 @@ export class OverlayRenderer {
       entry.element.title = result.translatedText;
       this.position(entry);
     }
+    this.updateSurfaceDiagnostics();
+    return stats;
+  }
+
+  private updateSurfaceDiagnostics(): void {
     const active = [...this.surfaces.values()];
     this.host.dataset.surfaceDiagnostics = JSON.stringify({
       total: active.length,
+      displayed: active.filter(entry => !entry.element.hidden && !this.showingOriginal).length,
+      reasons: Object.fromEntries([...new Set(active.map(entry => entry.element.dataset.suppressionReason).filter(Boolean))]
+        .map(reason => [reason, active.filter(entry => entry.element.dataset.suppressionReason === reason).length])),
       reading: active.filter((entry) => entry.region.semanticClass === "READING").length,
       ui: active.filter((entry) => entry.region.semanticClass === "UI").length,
       auxiliary: active.filter((entry) => entry.region.semanticClass === "AUXILIARY").length,
       suppressed: active.filter((entry) => entry.element.dataset.suppressed === "true").length,
     });
-    return stats;
+  }
+
+  getDisplayedRegionIds(): ReadonlySet<string> {
+    return new Set([...this.surfaces].filter(([, entry]) => !this.showingOriginal && !entry.element.hidden).map(([id]) => id));
   }
 
   reposition(): void {
     for (const entry of this.surfaces.values()) this.position(entry);
+    this.updateSurfaceDiagnostics();
   }
 
   private position(entry: SurfaceEntry): void {
     if (this.showingOriginal || !entry.region.element.isConnected) {
       entry.element.hidden = true;
+      entry.element.dataset.suppressed = "false";
+      entry.element.dataset.suppressionReason = this.showingOriginal ? "original-view" : "disconnected";
       return;
     }
     const rect = entry.region.element.getBoundingClientRect();
@@ -254,10 +272,12 @@ export class OverlayRenderer {
     });
     const visible = cssVisible && browserVisible && rect.width > 1 && rect.height > 1 &&
       rect.bottom >= 0 && rect.top <= innerHeight && rect.right >= 0 && rect.left <= innerWidth;
-    const suppressTinyUi = entry.region.semanticClass === "UI" && (rect.width < 48 || rect.height < 16);
-    entry.element.dataset.suppressed = String(suppressTinyUi);
-    entry.element.hidden = !visible || suppressTinyUi;
-    if (!visible || suppressTinyUi) return;
+    // Short labels use the same measured fit test as other text. Width alone
+    // is not a readability test (e.g. Write / Sign in). Every hidden path has a reason.
+    entry.element.dataset.suppressed = "false";
+    entry.element.dataset.suppressionReason = visible ? "" : (!cssVisible || !browserVisible ? "source-hidden" : "offscreen-or-empty");
+    entry.element.hidden = !visible;
+    if (!visible) return;
     const measurement = measureSurface(entry.region.element);
     if ("reason" in measurement) {
       entry.element.hidden = true;
@@ -288,7 +308,8 @@ export class OverlayRenderer {
     });
     // Fit the entire translation with a bounded reduction. Hidden overflow or a title
     // attribute is not readable completion; if no size fits, keep the original.
-    const minimum = Math.min(sourceFontSize, Math.max(12, sourceFontSize * 0.8));
+    const shortControl = compact && box.width < 48;
+    const minimum = Math.min(sourceFontSize, shortControl ? Math.max(10, sourceFontSize * 0.75) : Math.max(12, sourceFontSize * 0.8));
     let fits = false;
     const range = document.createRange();
     for (let step = 0; step <= 4; step++) {
@@ -369,6 +390,7 @@ export class OverlayRenderer {
       compact: entry.element.classList.contains("compact"),
       suppressed: entry.element.dataset.suppressed === "true",
       semanticClass: entry.region.semanticClass,
+      suppressionReason: entry.element.dataset.suppressionReason ?? "",
     }));
   }
 

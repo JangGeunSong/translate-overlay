@@ -69,7 +69,7 @@ describe("non-destructive overlay invariant", () => {
     renderer.dispose();
   });
 
-  it("preserves full UI translations but suppresses overlays too small to read safely", () => {
+  it("preserves short-label results and explains unmeasurable geometry", () => {
     const button = document.querySelector("button")!;
     vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
       x: 10, y: 20, top: 20, left: 10, right: 50, bottom: 34, width: 40, height: 14,

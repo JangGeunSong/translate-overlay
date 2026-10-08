@@ -21,6 +21,14 @@
   .overlap { position: relative; height: 48px; }
   .overlap p { margin: 0; }
   .overlap span { position: absolute; left: 80px; top: 0; background: white; }
+
+  .editorial-header {position:relative; margin-top:32px;}
+  .editorial-header .empty-container {position:absolute; inset:0; pointer-events:none;}
+  .editorial-header nav {position:relative; align-items:center; gap:14px; font:14px/20px Arial,sans-serif;}
+  .editorial-header nav a {display:inline; padding:0 12px;}
+  .editorial-header nav #write, .editorial-header nav #signin {padding:0;}
+  .editorial-hero {font-size:56px; line-height:42px; width:600px; margin:40px 0;}
+  .editorial-header button {font-size:18px; width:230px; padding:12px 24px;}
 </style>
 <main id="source">
   <nav><a id="navigation" data-core href="#details">Shipping and returns</a><a href="#details">Product details</a></nav>
@@ -40,6 +48,12 @@
   <div class="overlap"><p id="occluded">Delivery information overlaps a separate transaction value.</p><span data-protected>USD 299</span></div>
     <label id="expanded">Express delivery</label>
   </article>
+  <section class="editorial-header">
+    <div class="empty-container" aria-hidden="true"></div>
+    <nav><a id="story" href="#details">Our story</a><a id="membership" href="#details">Membership</a><a id="write" href="#details">Write</a><a id="signin" href="#details">Sign in</a><a id="getstarted" href="#details">Get started</a></nav>
+    <h1 id="hero" class="editorial-hero">Human stories &amp; ideas</h1>
+    <button id="start">Start reading</button>
+  </section>
 </main>
 <script>
   window.renderEvents = { navigation: 0, action: 0, input: 0, change: 0, submit: 0, untrusted: 0 };
@@ -53,7 +67,7 @@
   for (const id of ['option', 'check']) document.getElementById(id).addEventListener('change', event => count('change', event));
   document.querySelector('#form').addEventListener('submit', event => {
     event.preventDefault(); count('submit', event);
-    window.renderSubmission = { query: query.value, option: option.value, checked: check.checked };
+    window.renderSubmission = { query: document.getElementById('query').value, option: document.getElementById('option').value, checked: document.getElementById('check').checked };
   });
 </script>
 </html>

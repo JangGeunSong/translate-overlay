@@ -25,10 +25,10 @@ afterEach(() => {
 });
 
 describe('bounded read-only text surface layout', () => {
-  it('uses fractional text bounds and an opaque inherited background, excluding element padding', () => {
+  it('uses available content bounds and an opaque inherited background, excluding padding', () => {
     const before = document.body.innerHTML;
     expect(measureSurface(source)).toEqual({box: {
-      left:20.25, top:30.5, right:220.75, bottom:78.5, width:200.5, height:48,
+      left:10, top:20, right:310, bottom:120, width:300, height:100,
     }, background:'rgb(230, 240, 250)'});
     expect(document.body.innerHTML).toBe(before);
   });
@@ -46,8 +46,10 @@ describe('bounded read-only text surface layout', () => {
 
   it('rejects source overflow, partial ancestor clips, and offscreen text', () => {
     vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect(30, 20, 80, 30));
+    vi.spyOn(source.parentElement!, 'getBoundingClientRect').mockReturnValue(rect(30, 20, 80, 30));
     expect(measureSurface(source)).toEqual({reason:'source-overflow'});
     vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect(0, 0, 400, 200));
+    vi.spyOn(source.parentElement!, 'getBoundingClientRect').mockReturnValue(rect(0, 0, 400, 200));
     const parent = source.parentElement!;
     parent.style.overflowX = 'hidden';
     Object.defineProperty(parent, 'clientWidth', {configurable:true, value:100});
@@ -89,9 +91,9 @@ describe('bounded read-only text surface layout', () => {
     expect(surface.hidden).toBe(false);
     expect(surface.dataset.renderingPolicy).toBe('title');
     expect(surface.classList.contains('compact')).toBe(false);
-    expect(surface.style.width).toBe('200.5px');
-    expect(surface.style.height).toBe('48px');
-    expect(surface.style.transform).toBe('translate(20.25px, 30.5px)');
+    expect(surface.style.width).toBe('300px');
+    expect(surface.style.height).toBe('100px');
+    expect(surface.style.transform).toBe('translate(10px, 20px)');
     expect(surface.style.backgroundColor).toBe('rgb(230, 240, 250)');
     expect(surface.style.color).toBe('rgb(20, 30, 40)');
     expect(shadow.querySelector('style')!.textContent).not.toContain('ellipsis');
@@ -121,6 +123,53 @@ describe('bounded read-only text surface layout', () => {
     toggle.click();
     expect(surface.hidden).toBe(true);
     expect(surface.dataset.suppressionReason).toBe('translation-overflow');
+    renderer.dispose();
+  });
+});
+
+describe('essential text regression', () => {
+  it('accepts visible glyph ink outside a heading line-height inside safe parent space', () => {
+    vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect(10, 38, 300, 20));
+    const measurement = measureSurface(source);
+    expect(measurement).toHaveProperty('box');
+    if ('box' in measurement) expect(measurement.box).toMatchObject({top:30.5, bottom:78.5});
+  });
+
+  it('ignores an empty overlapping container but protects its actual text', () => {
+    const neighbour = document.createElement('div'); source.after(neighbour);
+    vi.spyOn(neighbour, 'getBoundingClientRect').mockReturnValue(rect(10,20,300,100));
+    expect(measureSurface(source)).toHaveProperty('box');
+    neighbour.textContent = 'Other menu';
+    expect(measureSurface(source)).toEqual({reason:'overlapping-neighbour'});
+  });
+
+  it('falls back to ink bounds when optional content space would cover a neighbour', () => {
+    const neighbour = document.createElement('span'); neighbour.textContent = 'USD 129'; source.after(neighbour);
+    vi.spyOn(neighbour, 'getBoundingClientRect').mockReturnValue(rect(250,40,30,20));
+    vi.spyOn(document, 'createRange').mockImplementation(() => {
+      let node: Node;
+      return {selectNodeContents(value: Node) {node=value;}, getClientRects: () =>
+        node!.parentElement === neighbour ? [rect(250,40,30,20)] : [rect()] } as unknown as Range;
+    });
+    expect(measureSurface(source)).toMatchObject({box:{left:20.25,right:220.75}});
+  });
+});
+
+describe('short label visibility and hidden reasons', () => {
+  it('renders a readable label narrower than 48px and counts it as displayed', () => {
+    source.outerHTML = '<a id="short" style="font-size:14px;line-height:20px">Write</a>';
+    source = document.querySelector('#short')!;
+    vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect(20,30,40,20));
+    vi.spyOn(document, 'createRange').mockReturnValue({selectNodeContents() {}, getClientRects: () => [rect(20,30,36,16)]} as unknown as Range);
+    const renderer = new OverlayRenderer(() => {});
+    renderer.reconcile([{id:'short',sourceKey:'s',element:source,text:'Write',language:'en',semanticClass:'UI',viewportBand:'VIEWPORT',translationPriority:1,rect:source.getBoundingClientRect()}],
+      new Map([['short',{regionId:'short',requestKey:'q',translatedText:'글쓰기',provider:'test'}]]));
+    expect(renderer.getSurfaceDiagnostics()[0]).toMatchObject({hidden:false,suppressionReason:''});
+    expect(renderer.getDisplayedRegionIds().has('short')).toBe(true);
+    vi.spyOn(source, 'getBoundingClientRect').mockReturnValue(rect(20,innerHeight+30,40,20));
+    renderer.reposition();
+    expect(renderer.getSurfaceDiagnostics()[0]).toMatchObject({hidden:true,suppressionReason:'offscreen-or-empty'});
+    expect(renderer.getDisplayedRegionIds().size).toBe(0);
     renderer.dispose();
   });
 });

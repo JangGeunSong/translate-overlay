@@ -86,6 +86,19 @@ describe("reader selection and activation lifecycle", () => {
     vi.useRealTimers();
   });
 
+  it("does not report hidden cached translations as viewport ready", async () => {
+    await flush();
+    completeTranslations();
+    await vi.advanceTimersByTimeAsync(40);
+    const host = document.querySelector<HTMLElement>('[data-context-reader-root]')!;
+    const progress = JSON.parse(host.dataset.translationProgress!);
+    expect(progress.completed).toBe(2);
+    expect(progress.total).toBe(2);
+    expect(progress.displayed).toBe(0);
+    expect(progress.viewportReady).toBe(false);
+    expect(shadow.querySelector('.translation-progress')?.textContent).not.toContain('현재 화면 준비됨');
+  });
+
   it.each([false, true])("ignores late A success/failure (%s), including finally, after B completes", async (failA) => {
     const a = await request("a");
     const b = await request("b");

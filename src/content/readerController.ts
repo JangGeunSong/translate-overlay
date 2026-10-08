@@ -183,7 +183,7 @@ export class ReaderController {
     this.selectionSnapshot = this.readSelection();
     this.activeTranslationMode = undefined;
     this.readerStartedAt = performance.now();
-    this.renderer = new OverlayRenderer(() => undefined);
+    this.renderer = new OverlayRenderer(() => this.updatePresentation());
     this.renderer.setProviderStatus({
       capability: "translation",
       mode: "unavailable",
@@ -389,6 +389,7 @@ export class ReaderController {
       this.positionFrame = undefined;
       this.renderer?.reposition();
       this.refreshTranslationPriorities();
+      this.updatePresentation();
     });
   }
 
@@ -614,22 +615,39 @@ export class ReaderController {
     let failed = 0;
     let viewportReadingTotal = 0;
     let viewportReadingReady = 0;
+    let viewportTotal = 0;
+    let viewportDisplayed = 0;
+    let meaningfulTotal = 0;
+    let meaningfulDisplayed = 0;
+    const displayed = this.renderer?.getDisplayedRegionIds() ?? new Set<string>();
     for (const region of this.regions) {
       const key = translationKeyForRegion(region, TARGET_LANGUAGE);
       const state = this.lifecycleStates.get(key);
       if (state === "queued") queued += 1;
       if (state === "translating") translating += 1;
       if (state === "failed") failed += 1;
-      if (region.viewportBand === "VIEWPORT" && region.semanticClass === "READING") {
-        viewportReadingTotal += 1;
-        if (translations.has(region.id)) viewportReadingReady += 1;
+      if (region.viewportBand === "VIEWPORT") {
+        const rect = region.element.getBoundingClientRect();
+        if (rect.right <= 0 || rect.left >= innerWidth || rect.bottom <= 0 || rect.top >= innerHeight) continue;
+        viewportTotal += 1;
+        if (displayed.has(region.id)) viewportDisplayed += 1;
+        if (region.semanticClass !== "AUXILIARY") {
+          meaningfulTotal += 1;
+          if (displayed.has(region.id)) meaningfulDisplayed += 1;
+        }
+        if (region.semanticClass === "READING") {
+          viewportReadingTotal += 1;
+          if (displayed.has(region.id)) viewportReadingReady += 1;
+        }
       }
     }
-    const viewportReady = viewportReadingTotal > 0 &&
-      viewportReadingReady / viewportReadingTotal >= VIEWPORT_READY_RATIO;
+    const viewportReady = meaningfulTotal > 0 && meaningfulDisplayed / meaningfulTotal >= VIEWPORT_READY_RATIO;
     return {
       total: this.regions.length,
       completed: translations.size,
+      displayed: displayed.size,
+      viewportTotal,
+      viewportDisplayed,
       queued,
       translating,
       failed,
@@ -649,7 +667,7 @@ export class ReaderController {
     }
     if (
       this.diagnostics.timeToFirstReadingContentMs === null &&
-      this.regions.some((region) => region.semanticClass === "READING" && translations.has(region.id))
+      this.regions.some((region) => region.semanticClass === "READING" && this.renderer?.getDisplayedRegionIds().has(region.id))
     ) {
       this.diagnostics.timeToFirstReadingContentMs = elapsed;
     }
