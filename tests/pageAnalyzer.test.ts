@@ -36,6 +36,11 @@ describe("PageAnalyzer", () => {
     expect(afterText.sourceKey).not.toBe(before.sourceKey);
   });
 
+  it("preserves word spacing across inline text boundaries", () => {
+    document.body.innerHTML = '<p>Use <b>two </b>batteries for travel.</p>';
+    expect(new PageAnalyzer().analyze().map(region => region.text)).toEqual(["Use two batteries for travel."]);
+  });
+
   it("prevents viewport controls from exhausting the bounded semantic budget", () => {
     document.body.innerHTML = `<main>${Array.from({ length: 12 }, (_, index) => `<button>Menu option ${index}</button>`).join("")}${
       Array.from({ length: 8 }, (_, index) => `<p>Substantive documentation paragraph number ${index} with enough readable context.</p>`).join("")}</main>`;

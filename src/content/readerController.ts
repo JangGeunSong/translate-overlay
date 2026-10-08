@@ -3,7 +3,7 @@ import { PageAnalyzer } from "./analysis/pageAnalyzer";
 import { isRegionAffected, reconcileRegions } from "./analysis/reconciliation";
 import { getTranslationPriority, getViewportBand } from "./analysis/semanticClassifier";
 import { TranslationCache, translationKeyForRegion } from "./analysis/translationCache";
-import { READABLE_BLOCK_SELECTOR } from "./analysis/text";
+import { createTranslationTextReader, READABLE_BLOCK_SELECTOR } from "./analysis/text";
 import { OverlayRenderer } from "./overlay/overlayRenderer";
 import type { LinguisticProvider } from "./providers/provider";
 import { TranslationScheduler, type SchedulerEvent, type TranslationJob } from "./translation/translationScheduler";
@@ -128,6 +128,9 @@ export class ReaderController {
   private readonly scheduler: TranslationScheduler;
   private diagnostics = emptyDiagnostics();
   private scanTimer?: number;
+  private firstScanAt?: number;
+  private fullScanPending = false;
+  private readonly scrollRoots = new Set<ParentNode>();
   private mutationTimer?: number;
   private firstMutationAt?: number;
   private positionFrame?: number;
@@ -196,7 +199,8 @@ export class ReaderController {
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ["class", "style", "hidden", "aria-hidden", "open"],
+      attributeFilter: ["class", "style", "hidden", "aria-hidden", "open", "contenteditable", "role",
+        "disabled", "aria-expanded", "aria-selected", "aria-pressed", "aria-checked"],
     });
     this.resizeObserver = new ResizeObserver(() => this.schedulePosition());
     this.resizeObserver.observe(document.documentElement);
@@ -243,6 +247,11 @@ export class ReaderController {
     this.renderer = undefined;
     this.regions = [];
     this.affectedRoots.clear();
+    this.scrollRoots.clear();
+    this.scanTimer = undefined;
+    this.mutationTimer = undefined;
+    this.firstScanAt = undefined;
+    this.fullScanPending = false;
     this.firstMutationAt = undefined;
     this.positionFrame = undefined;
     this.presentationFrame = undefined;
@@ -258,9 +267,12 @@ export class ReaderController {
     this.renderer?.setProviderStatus(status);
   };
 
-  private readonly onScroll = (): void => {
+  private readonly onScroll = (event: Event): void => {
+    if (!this.enabled) return;
     this.schedulePosition();
-    if (Math.abs(scrollY - this.lastAnalyzedScrollY) >= Math.max(240, innerHeight * 0.6)) {
+    if (event.target instanceof Element && !event.target.closest("[data-context-reader-root]")) {
+      this.scheduleFullReconcile(180, event.target);
+    } else if (Math.abs(scrollY - this.lastAnalyzedScrollY) >= Math.max(240, innerHeight * 0.6)) {
       this.scheduleFullReconcile(180);
     }
   };
@@ -286,6 +298,13 @@ export class ReaderController {
       }
     }
     if (this.affectedRoots.size === 0) return;
+    // Dispose unsafe/stale rectangles before the debounced discovery pass and
+    // remove their queued work. Already sent requests still use existing identity guards.
+    const readText = createTranslationTextReader();
+    const roots = [...this.affectedRoots];
+    const retained = this.regions.filter(region => !isRegionAffected(region, roots) ||
+      (region.element.isConnected && readText(region.element) === region.text));
+    if (retained.length !== this.regions.length) this.commitRegions(retained);
     const now = performance.now();
     this.firstMutationAt ??= now;
     const remaining = Math.max(0, MUTATION_MAX_WAIT_MS - (now - this.firstMutationAt));
@@ -385,12 +404,24 @@ export class ReaderController {
     if (changed) this.syncTranslationWork();
   }
 
-  private scheduleFullReconcile(delay: number): void {
+  private scheduleFullReconcile(delay: number, scrollRoot?: ParentNode): void {
+    if (!this.enabled) return;
+    if (scrollRoot) this.scrollRoots.add(scrollRoot);
+    else this.fullScanPending = true;
+    const now = performance.now();
+    this.firstScanAt ??= now;
     if (this.scanTimer) clearTimeout(this.scanTimer);
     this.scanTimer = window.setTimeout(() => {
       this.scanTimer = undefined;
-      this.fullReconcile();
-    }, delay);
+      this.firstScanAt = undefined;
+      const full = this.fullScanPending;
+      const roots = [...this.scrollRoots];
+      this.fullScanPending = false;
+      this.scrollRoots.clear();
+      if (!this.enabled) return;
+      if (full) this.fullReconcile();
+      else this.targetedReconcile(roots);
+    }, Math.min(delay, Math.max(0, MUTATION_MAX_WAIT_MS - (now - this.firstScanAt))));
   }
 
   private fullReconcile(): void {
@@ -481,6 +512,13 @@ export class ReaderController {
 
   private onSchedulerEvent(event: SchedulerEvent): void {
     if (!this.enabled) return;
+    // The scheduler guards activation generations. Source keys are shared for
+    // request reuse, so accept an outcome only while some current safe source
+    // still needs that key. Removed/reused DOM must not alter cache or metrics.
+    const readText = createTranslationTextReader();
+    if (!this.regions.some(region => region.element.isConnected &&
+        translationKeyForRegion(region, TARGET_LANGUAGE) === event.job.key &&
+        readText(region.element) === region.text)) return;
     if (event.type === "started") {
       this.lifecycleStates.set(event.job.key, "translating");
       this.diagnostics.translationStarted += 1;

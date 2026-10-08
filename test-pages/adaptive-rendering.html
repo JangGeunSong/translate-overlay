@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Adaptive commerce and article rendering</title>
+<style>
+  body { margin: 80px auto; width: 640px; background: #f4f1e8; color: #243047; font: 18px/1.5 Arial, sans-serif; }
+  h1 { width: 420px; font-size: 26px; line-height: 1.3; }
+  nav { display: flex; gap: 28px; }
+  a { color: #174b80; }
+  button, input, select { font: inherit; }
+  button { padding: 12px 24px; background: #183e63; color: white; border: 2px solid #102d48; border-radius: 8px; }
+  .row { display: flex; gap: 20px; align-items: center; margin: 14px 0; }
+  .compact { font-size: 14px; }
+  .tiny { display: inline-block; width: 28px; font-size: 12px; }
+  .clip { width: 360px; height: 100px; overflow: hidden; border: 4px solid #487; padding: 8px; }
+  .scroll { width: 320px; height: 84px; overflow: auto; border: 3px solid #876; }
+  .scroll p { margin: 0; }
+  .partial { width: 520px; }
+  .padded { padding: 20px; background: #e2ebf4; }
+  .gradient { background: linear-gradient(90deg, white, gray); }
+  .overlap { position: relative; height: 48px; }
+  .overlap p { margin: 0; }
+  .overlap span { position: absolute; left: 80px; top: 0; background: white; }
+</style>
+<main id="source">
+  <nav><a id="navigation" data-core href="#details">Shipping and returns</a><a href="#details">Product details</a></nav>
+  <h1><a id="title" data-core href="#details">Lightweight travel camera with interchangeable lenses and weather protection</a></h1>
+  <div class="row"><span data-protected>USD 129</span><span data-protected>数量 2</span><span data-protected>SKU AB12</span></div>
+  <p id="condition" data-core>Free returns within thirty days when the original packaging is included.</p>
+  <div class="row"><button id="action" data-core>Add selected item to cart</button><label id="compact" class="compact" data-core>Available now</label><label id="tiny" class="tiny">New</label></div>
+  <form id="form">
+    <div class="row"><input id="query" required aria-label="Search" data-protected><select id="option" data-protected><option>Blue</option><option>Red</option></select></div>
+    <label><input id="check" type="checkbox" data-protected><span>Gift wrapping</span></label>
+    <button id="submit">Search products</button>
+  </form>
+  <article id="details">
+    <p id="body" class="padded" data-core>The camera is designed for long walks and everyday photography. Its weather protection keeps the controls usable during light rain, and the interchangeable lenses make it easy to capture distant scenery.</p>
+    <div class="clip"><div class="scroll"><p id="nested" data-core>Delivery includes tracking and careful protective packaging.</p><p id="partial" class="partial">This partially clipped delivery condition must remain original.</p></div></div>
+    <p id="gradient" class="gradient">An uncertain background keeps the original readable.</p>
+  <div class="overlap"><p id="occluded">Delivery information overlaps a separate transaction value.</p><span data-protected>USD 299</span></div>
+    <label id="expanded">Express delivery</label>
+  </article>
+</main>
+<script>
+  window.renderEvents = { navigation: 0, action: 0, input: 0, change: 0, submit: 0, untrusted: 0 };
+  window.renderMutations = [];
+  new MutationObserver(records => renderMutations.push(...records.map(r => ({type:r.type, attribute:r.attributeName, target:r.target.nodeName}))))
+    .observe(document.querySelector('#source'), {subtree:true, childList:true, attributes:true, characterData:true});
+  const count = (name, event) => { renderEvents[name]++; if (!event.isTrusted) renderEvents.untrusted++; };
+  document.querySelector('#navigation').addEventListener('click', event => { event.preventDefault(); count('navigation', event); });
+  document.querySelector('#action').addEventListener('click', event => count('action', event));
+  document.querySelector('#query').addEventListener('input', event => count('input', event));
+  for (const id of ['option', 'check']) document.getElementById(id).addEventListener('change', event => count('change', event));
+  document.querySelector('#form').addEventListener('submit', event => {
+    event.preventDefault(); count('submit', event);
+    window.renderSubmission = { query: query.value, option: option.value, checked: check.checked };
+  });
+</script>
+</html>

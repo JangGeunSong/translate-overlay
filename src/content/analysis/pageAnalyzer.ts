@@ -3,11 +3,11 @@ import {
   READABLE_BLOCK_SELECTOR,
   createRegionId,
   createSourceKey,
+  createTranslationTextReader,
   detectSourceLanguage,
   isElementRendered,
   isExcludedElement,
   isLikelyReadableText,
-  normalizeText,
 } from "./text";
 import {
   classifySemanticFeatures,
@@ -36,8 +36,8 @@ export class PageAnalyzer {
 
   analyze(options: AnalysisOptions = {}): TextRegion[] {
     const maxRegions = options.maxRegions ?? 40;
-    const blocks = new Map<HTMLElement, string[]>();
-    const seededBlocks = new Set<HTMLElement>();
+    const blocks = new Map<HTMLElement, string>();
+    const readText = createTranslationTextReader();
     let boundedUiBlocks = 0;
     const roots = this.compactRoots(options.roots ?? [document.body]);
     if (roots.includes(document.body) && typeof document.elementFromPoint === "function") {
@@ -48,10 +48,9 @@ export class PageAnalyzer {
           const hit = document.elementFromPoint(x, y);
           const block = hit?.closest(VIEWPORT_BLOCK_SELECTOR) as HTMLElement | null;
           if (!block || isExcludedElement(block)) continue;
-          const text = normalizeText(block.innerText || block.textContent || "");
-          if (isLikelyReadableText(text)) {
-            blocks.set(block, [text]);
-            seededBlocks.add(block);
+          const text = readText(block);
+          if (text !== null && isLikelyReadableText(text)) {
+            blocks.set(block, text);
           }
         }
       }
@@ -73,26 +72,33 @@ export class PageAnalyzer {
         const node = walker.currentNode as Text;
         const parent = node.parentElement;
         if (!parent) continue;
-        const block = (parent.closest(READABLE_BLOCK_SELECTOR) ?? parent) as HTMLElement;
-        if (isExcludedElement(block) || !this.belongsToRoots(block, roots)) continue;
-        if (seededBlocks.has(block)) continue;
-        if (!blocks.has(block) && (
+        let block = (parent.closest(READABLE_BLOCK_SELECTOR) ?? parent) as HTMLElement;
+        if (readText(block) === null) {
+          const boundary = block;
+          block = parent;
+          for (let ancestor = parent.parentElement; ancestor && ancestor !== boundary && boundary.contains(ancestor); ancestor = ancestor.parentElement) {
+            if (readText(ancestor) === null) break;
+            block = ancestor;
+          }
+        }
+        if (!this.belongsToRoots(block, roots)) continue;
+        const text = readText(block);
+        if (text === null || !isLikelyReadableText(text)) continue;
+        if (blocks.has(block)) continue;
+        if (
           block.matches("a, button, label, summary, [role='button'], [role='tab'], [role='menuitem']") ||
           Boolean(block.closest("nav, [role='navigation'], [role='menu'], [role='tablist']"))
-        )) {
+        ) {
           if (boundedUiBlocks >= maxRegions * 2) continue;
           boundedUiBlocks += 1;
         }
-        const texts = blocks.get(block) ?? [];
-        texts.push(node.nodeValue ?? "");
-        blocks.set(block, texts);
+        blocks.set(block, text);
         if (blocks.size >= maxRegions * 30 || scannedTextNodes >= maxRegions * 100) break;
       }
     }
 
     const candidates: TextRegion[] = [];
-    for (const [element, textParts] of blocks) {
-      const text = normalizeText(textParts.join(" "));
+    for (const [element, text] of blocks) {
       if (!isLikelyReadableText(text) || !element.isConnected) continue;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 1 || rect.height <= 1) continue;

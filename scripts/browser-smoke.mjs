@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -374,10 +374,379 @@ async function selectWord(page, word) {
   await waitForCondition(() => evaluate(page, "getSelection().toString()"), text => text === word, "pointer text selection");
 }
 
+async function commerceState(page) {
+  return evaluate(page, `({
+    search: document.querySelector('#search').value,
+    color: document.querySelector('#color').value,
+    quantity: document.querySelector('#quantity').value,
+    note: document.querySelector('#note').textContent,
+    price: document.querySelector('#price').textContent,
+    quantityText: document.querySelector('#quantity-value').textContent,
+    cart: document.querySelector('#cart-state').textContent,
+    focus: document.activeElement.id, events: window.commerceEvents,
+    markup: document.querySelector('#source').outerHTML
+  })`);
+}
+
+async function commerceJourney(page) {
+  await clickSource(page, '#search');
+  for (const letter of 'tea') await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+  await key(page, 'a', 'KeyA', 65, 2);
+  for (const letter of 'books') await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+  await key(page, 'Tab', 'Tab', 9);
+  await key(page, 'End', 'End', 35);
+  await key(page, 'Tab', 'Tab', 9);
+  await key(page, 'a', 'KeyA', 65, 2);
+  await key(page, '3', 'Digit3', 51);
+  await clickSource(page, '#note');
+  await key(page, 'a', 'KeyA', 65, 2);
+  for (const letter of 'gift') await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+  await clickSource(page, '#cart');
+  const state = await commerceState(page);
+  const expected = { search: 8, color: 1, quantity: 1, note: 4, cart: 1, protect: 0, untrusted: 0 };
+  if (state.search !== 'books' || state.color !== 'Red' || state.quantity !== '3' || state.note !== 'gift' ||
+      state.price !== 'USD 149' || state.quantityText !== '数量 3' || state.cart !== 'Quantity: 3' ||
+      state.focus !== 'cart' || JSON.stringify(state.events) !== JSON.stringify(expected)) {
+    throw new Error(`Commerce real input state failed: ${JSON.stringify(state)}`);
+  }
+  return state;
+}
+
+async function assertProtectedGeometry(page) {
+  const protectedRects = await evaluate(page, `Array.from(document.querySelectorAll('[data-protected], #reused, #attribute-reused[contenteditable], #role-reused[role]'))
+    .filter(el => el.id !== 'reused' || el.textContent === 'USD 299')
+    .map(el => { const r = el.getBoundingClientRect(); return {text: el.textContent, left:r.left, top:r.top, right:r.right, bottom:r.bottom}; })
+    .filter(r => r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth)`);
+  const tree = await page.send('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+  for (const node of tree.nodes) {
+    const attrs = node.attributes ?? [];
+    if (!attrs.includes('data-source-text') || attrs.includes('hidden')) continue;
+    const { model } = await page.send('DOM.getBoxModel', { nodeId: node.nodeId });
+    const [left, top, right, , , bottom] = model.border;
+    const overlap = protectedRects.find(r => Math.min(right, r.right) - Math.max(left, r.left) > 0.5 &&
+      Math.min(bottom, r.bottom) - Math.max(top, r.top) > 0.5);
+    if (overlap) throw new Error(`Surface ${attrs[attrs.indexOf('data-source-text') + 1]} covers protected ${JSON.stringify(overlap)}`);
+  }
+}
+
+async function targetingJourney(page, setReader, pageUrl) {
+  const load = async () => {
+    await page.send('Page.navigate', { url: `${pageUrl}targeting` });
+    await waitForCondition(() => evaluate(page, `Boolean(window.commerceEvents && document.querySelector('#note'))`), Boolean, 'targeting fixture');
+  };
+  await load();
+  const off = await commerceJourney(page);
+  await page.send('Page.reload', { ignoreCache: true });
+  await waitForCondition(() => evaluate(page, `window.commerceEvents?.search`), count => count === 0, 'fresh commerce fixture');
+  const baseline = await evaluate(page, `document.querySelector('#source').outerHTML`);
+  translationTexts.length = 0;
+  await waitForCondition(() => setReader(true).then(() => true).catch(() => false), Boolean, 'targeting activation');
+  const positive = ['Travel camera 2026 with 2 lenses', 'Use 2 batteries for up to 12 hours.',
+    'Price', 'Quantity', 'SKU', 'Order number', 'Search products', 'Select color', 'Choose quantity',
+    'Delivery note', 'Add to cart', 'Select blue', 'Gift message', 'Read only help', 'Custom note'];
+  await waitForCondition(() => getSurfaceSources(page), sources => positive.every(text => sources.includes(text)), 'commerce positive translations', 100);
+  if (await evaluate(page, `document.querySelector('#source').outerHTML`) !== baseline) throw new Error('Targeting changed source markup.');
+  const assertRequests = async () => {
+    const allowed = new Set([...positive, 'Current delivery information', 'Current return information',
+      'Current shipping information', 'Current gift information', 'Update transaction state', 'Delivery fee']);
+    const leaked = translationTexts.filter(text => !allowed.has(text));
+    const unsafeSurfaces = (await getSurfaceSources(page)).filter(text => !allowed.has(text));
+    if (leaked.length || unsafeSurfaces.length) throw new Error(`Protected data targeted: ${JSON.stringify({ leaked, unsafeSurfaces })}`);
+  };
+  await assertRequests();
+  await evaluate(page, 'scrollTo(0, 0)');
+  await delay(250);
+  await assertProtectedGeometry(page);
+  const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+  await writeFile('dist/targeting-safety.png', Buffer.from(screenshot.data, 'base64'));
+  const on = await commerceJourney(page);
+  if (JSON.stringify(on) !== JSON.stringify(off)) throw new Error(`Commerce OFF/ON states differ: ${JSON.stringify({ off, on })}`);
+  await delay(250);
+  await assertRequests();
+  for (const selector of ['#price', '#note', '.variants', '[contenteditable="false"]']) {
+    await evaluate(page, `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
+    await delay(250);
+    await assertProtectedGeometry(page);
+  }
+  await setReader(false);
+  if (JSON.stringify(await commerceState(page)) !== JSON.stringify(on)) throw new Error('Commerce OFF reverted user state.');
+  await setReader(true);
+  await waitForCondition(() => getSurfaceSources(page), sources => sources.includes('Current delivery information') &&
+    sources.includes('Current return information') && sources.includes('Current shipping information') && sources.includes('Current gift information'), 'reused nodes before protection');
+  await clickSource(page, '#protect');
+  await waitForCondition(() => getSurfaceSources(page), sources => sources.includes('Delivery fee') &&
+    !sources.some(text => /^Current (delivery|return|shipping|gift) information$/.test(text)), 'eligible to protected source and attribute transitions');
+  await assertRequests();
+  await assertProtectedGeometry(page);
+  if (await evaluate(page, 'window.commerceEvents.protect') !== 1 ||
+      await evaluate(page, `document.querySelectorAll('[data-context-reader-root]').length`) !== 1) throw new Error('Protection update action or single host failed.');
+  await setReader(false);
+  console.log(`Transaction targeting passed: ${positive.length} positive surfaces, protected request and geometry assertions, identical trusted OFF/ON search/color/quantity/editable/cart actions, reused nodes and attribute transitions.`);
+}
+
+const renderingTranslations = {
+  'Shipping and returns': '배송 및 반품 안내',
+  'Lightweight travel camera with interchangeable lenses and weather protection': '교환식 렌즈와 날씨 보호 기능을 갖춘 가벼운 여행용 카메라',
+  'Free returns within thirty days when the original packaging is included.': '원래 포장이 포함된 경우 삼십 일 이내에 무료로 반품할 수 있습니다.',
+  'Add selected item to cart': '선택한 상품을 장바구니에 담기',
+  'Available now': '현재 구매 가능',
+  'The camera is designed for long walks and everyday photography. Its weather protection keeps the controls usable during light rain, and the interchangeable lenses make it easy to capture distant scenery.': '이 카메라는 긴 산책과 일상 촬영을 위해 설계되었습니다. 날씨 보호 기능 덕분에 가벼운 비가 내려도 조작할 수 있으며, 교환식 렌즈로 멀리 있는 풍경도 쉽게 촬영할 수 있습니다.',
+  'Delivery includes tracking and careful protective packaging.': '배송 추적과 세심한 보호 포장이 포함됩니다.',
+};
+
+async function renderingSurfaces(page) {
+  const tree = await page.send('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+  const surfaces = [];
+  for (const node of tree.nodes.filter(node => (node.attributes ?? []).includes('data-source-text'))) {
+    const { object } = await page.send('DOM.resolveNode', { nodeId: node.nodeId });
+    const result = await page.send('Runtime.callFunctionOn', {
+      objectId: object.objectId, returnByValue: true,
+      functionDeclaration: `function() {
+        const r = this.getBoundingClientRect(), s = getComputedStyle(this);
+        const range = document.createRange(); range.selectNodeContents(this);
+        return { source: this.dataset.sourceText, sourceKey: this.dataset.sourceKey, regionId: this.dataset.regionId, text: this.textContent, hidden: this.hidden,
+          reason: this.dataset.suppressionReason, policy: this.dataset.renderingPolicy, semanticClass: this.dataset.semanticClass,
+          rect: {left:r.left, top:r.top, right:r.right, bottom:r.bottom},
+          lines: [...range.getClientRects()].map(r => ({left:r.left, top:r.top, right:r.right, bottom:r.bottom})),
+          client: [this.clientWidth, this.clientHeight], scroll: [this.scrollWidth, this.scrollHeight],
+          whiteSpace: s.whiteSpace, ellipsis: s.textOverflow, pointer: s.pointerEvents,
+          background: s.backgroundColor, color: s.color, fontSize: parseFloat(s.fontSize) };
+      }`,
+    });
+    surfaces.push(result.result.value);
+    await page.send('Runtime.releaseObject', { objectId: object.objectId });
+  }
+  return surfaces;
+}
+
+async function renderingJourney(page, setReader, pageUrl) {
+  const load = async () => {
+    await page.send('Page.navigate', { url: `${pageUrl}rendering` });
+    await waitForCondition(() => evaluate(page, 'Boolean(window.renderEvents)'), Boolean, 'rendering fixture');
+  };
+  const state = () => evaluate(page, `({events: renderEvents, submission: window.renderSubmission,
+    value: query.value, checked: check.checked, selected: option.selectedIndex,
+    focus: document.activeElement.id, selection: [query.selectionStart, query.selectionEnd],
+    mutations: renderMutations, markup: document.querySelector('#source').outerHTML})`);
+  const journey = async () => {
+    await clickSource(page, '#navigation');
+    await clickSource(page, '#action');
+    await key(page, 'Enter', 'Enter', 13);
+    await clickSource(page, '#query');
+    for (const letter of 'tea') await key(page, letter, `Key${letter.toUpperCase()}`, letter.toUpperCase().charCodeAt(0));
+    await key(page, 'Tab', 'Tab', 9); await key(page, 'End', 'End', 35);
+    await key(page, 'Tab', 'Tab', 9); await key(page, ' ', 'Space', 32);
+    await key(page, 'Tab', 'Tab', 9); await key(page, 'Enter', 'Enter', 13);
+    await clickSource(page, '#query'); await key(page, 'a', 'KeyA', 65, 2);
+    const result = await state();
+    if (JSON.stringify(result.events) !== JSON.stringify({navigation:1, action:2, input:3, change:2, submit:1, untrusted:0}) ||
+        JSON.stringify(result.submission) !== JSON.stringify({query:'tea', option:'Red', checked:true}) ||
+        result.focus !== 'query' || result.value !== 'tea' || !result.checked || result.selected !== 1 ||
+        JSON.stringify(result.selection) !== '[0,3]') throw new Error(`Rendering input journey failed: ${JSON.stringify(result)}`);
+    return result;
+  };
+  await load();
+  const off = await journey();
+  await load();
+  const before = await evaluate(page, `document.querySelector('#source').outerHTML`);
+  await waitForCondition(() => setReader(true).then(() => true).catch(() => false), Boolean, 'rendering activation');
+  await waitForCondition(() => getSurfaceSources(page), sources => Object.keys(renderingTranslations).every(text => sources.includes(text)), 'rendering core requests', 100);
+  const failures = [];
+  for (const id of ['title', 'navigation', 'condition', 'action', 'compact', 'body', 'nested']) {
+    await evaluate(page, `document.getElementById('${id}').scrollIntoView({block:'center'})`);
+    await delay(250);
+    const geometry = await evaluate(page, `(() => {
+      const el = document.getElementById('${id}'); const range = document.createRange(); range.selectNodeContents(el);
+      const box = r => ({left:r.left, top:r.top, right:r.right, bottom:r.bottom});
+      const clips = [];
+      for (let a = el.parentElement; a; a = a.parentElement) {
+        const s = getComputedStyle(a), r = a.getBoundingClientRect();
+        if (/(hidden|clip|auto|scroll)/.test(s.overflowX + s.overflowY)) clips.push({left:r.left+a.clientLeft, top:r.top+a.clientTop, right:r.left+a.clientLeft+a.clientWidth, bottom:r.top+a.clientTop+a.clientHeight});
+      }
+      return {source:el.textContent, text:box(range.getBoundingClientRect()), element:box(el.getBoundingClientRect()), clips};
+    })()`);
+    const matching = (await renderingSurfaces(page)).filter(s => s.source === geometry.source);
+    const surface = matching.find(s => !s.hidden) ?? matching[0];
+    const inside = (r, b) => r.left >= b.left - 0.6 && r.top >= b.top - 0.6 && r.right <= b.right + 0.6 && r.bottom <= b.bottom + 0.6;
+    if (!surface || surface.hidden || matching.filter(s => !s.hidden).length !== 1 || surface.text !== renderingTranslations[geometry.source] || surface.pointer !== 'none' ||
+        surface.ellipsis === 'ellipsis' || surface.fontSize < 12 || surface.scroll.some((n, i) => n > surface.client[i]) ||
+        !inside(surface.rect, geometry.text) || !inside(surface.rect, geometry.element) ||
+        !geometry.clips.every(clip => inside(surface.rect, clip)) || !surface.lines.every(line => inside(line, surface.rect))) {
+      failures.push({id, surface, geometry});
+    }
+    if ((id === 'title' && (surface?.semanticClass !== 'UI' || surface?.whiteSpace !== 'normal' || surface.lines.length < 2)) ||
+        (id === 'body' && surface?.lines.length < 2) ||
+        (id === 'action' && (surface?.background !== 'rgb(24, 62, 99)' || surface?.color !== 'rgb(255, 255, 255)'))) {
+      failures.push({id, expected:'multiline title/body or inherited button contrast', surface});
+    }
+    try { await assertProtectedGeometry(page); } catch (error) { failures.push({id, protectedGeometry: error.message}); }
+  }
+  for (const id of ['partial', 'gradient', 'tiny', 'occluded', 'expanded']) {
+    // Scroll only the page here: retain the deliberately partial nested clip.
+    await evaluate(page, `scrollTo(0, document.getElementById('${id}').getBoundingClientRect().top + scrollY - 250)`);
+    await delay(250);
+    const source = await evaluate(page, `document.getElementById('${id}').textContent`);
+    const surface = (await renderingSurfaces(page)).find(s => s.source === source);
+    if (!surface || !surface.hidden || (id === 'expanded' && surface.reason !== 'translation-overflow')) failures.push({id, expected:'safe original', surface});
+  }
+  if (failures.length) throw new Error(`Adaptive rendering acceptance failed: ${JSON.stringify(failures)}`);
+  // Real wheel input exercises the existing capture-scroll reposition path.
+  const scrollPoint = await evaluate(page, `(() => {
+    const el = document.querySelector('.scroll'); el.scrollIntoView({block:'center'});
+    const r = el.getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2};
+  })()`);
+  await page.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...scrollPoint, deltaX:0, deltaY:60});
+  await waitForCondition(() => evaluate(page, `document.querySelector('.scroll').scrollTop`), top => top > 0, 'nested wheel scroll');
+  await waitForCondition(() => renderingSurfaces(page), surfaces => surfaces.find(s => s.source === 'Delivery includes tracking and careful protective packaging.')?.hidden, 'partial nested text returns to original');
+  await page.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...scrollPoint, deltaX:0, deltaY:-60});
+  await waitForCondition(() => renderingSurfaces(page), surfaces => surfaces.some(s => s.source === 'Delivery includes tracking and careful protective packaging.' && !s.hidden), 'nested translation restored after wheel scroll');
+  if (await evaluate(page, `document.querySelector('#source').outerHTML`) !== before ||
+      await evaluate(page, 'renderMutations.length') !== 0 ||
+      !await evaluate(page, `document.querySelectorAll('[data-context-reader-root]').length === 1 && document.querySelector('[data-context-reader-root]').shadowRoot === null`)) {
+    throw new Error('Rendering changed source markup or closed single-host invariant.');
+  }
+  await evaluate(page, 'scrollTo(0,0)'); await delay(250);
+  const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+  await writeFile('dist/adaptive-rendering.png', Buffer.from(screenshot.data, 'base64'));
+  const on = await journey();
+  if (JSON.stringify(on) !== JSON.stringify(off)) throw new Error(`Rendering OFF/ON state mismatch: ${JSON.stringify({off,on})}`);
+  await setReader(false);
+  if (JSON.stringify(await state()) !== JSON.stringify(on)) throw new Error('Rendering OFF reverted user state.');
+  console.log('Adaptive rendering passed: seven required full translations, text/source/ancestor bounds, protected geometry, five safe-original cases, nested wheel clipping/restoration and identical trusted OFF/ON input/form state.');
+}
+
+const dynamicTranslations = {
+  'Travel camera collection': '여행용 카메라', 'Travel accessories collection': '여행용 액세서리',
+  'Select blue finish': '파란색 선택', 'Add selected camera': '카메라 담기',
+  'Standard finish selected': '기본 색상 선택됨', 'Blue finish selected': '파란색 선택됨',
+  'Your cart is empty': '빈 장바구니', 'Camera ready in your cart': '카메라가 담겼습니다',
+  'Show delivery terms': '배송 조건', 'View accessories': '액세서리 보기',
+  'Free delivery with tracking': '무료 추적 배송',
+  'Returns include protective packaging': '반품 보호 포장',
+  'Current replacement camera': '현재 카메라', 'Superseded camera details': '이전 카메라',
+};
+
+async function dynamicJourney(page, setReader, pageUrl) {
+  const load = async () => {
+    const previous = await evaluate(page, 'performance.timeOrigin');
+    await page.send('Page.navigate', {url: `${pageUrl}dynamic`});
+    await waitForCondition(() => evaluate(page, `performance.timeOrigin !== ${previous} && Boolean(window.dynamicEvents)`), Boolean, 'dynamic fixture');
+  };
+  const state = () => evaluate(page, `({events: dynamicEvents, mutations: dynamicMutations,
+    markup: document.querySelector('#source').outerHTML, quantity: quantity.value,
+    selected: blue.getAttribute('aria-pressed'), focus: document.activeElement.id,
+    note: note.textContent, price: price.textContent, count: document.getElementById('count').textContent})`);
+  const current = async (ids, obsolete = []) => {
+    const sources = await evaluate(page, `(${JSON.stringify(ids)}).map(id => document.getElementById(id).textContent)`);
+    const surfaces = await waitForCondition(() => renderingSurfaces(page), all => sources.every(source =>
+      all.some(s => s.source === source && !s.hidden && s.text === (dynamicTranslations[source] ?? '상품 안내'))) &&
+      !all.some(s => obsolete.includes(s.source) || obsolete.map(text => dynamicTranslations[text]).includes(s.text)), `current dynamic translations ${ids}`).catch(async error => {
+        throw new Error(`${error.message}; state=${JSON.stringify(await evaluate(page, `({host:document.querySelector('[data-context-reader-root]')?.dataset, url:location.href})`))}; requests=${JSON.stringify(translationTexts)}; provider=${JSON.stringify(await getProviderStatus(page))}`);
+      });
+    if (new Set(surfaces.map(s => s.regionId)).size !== surfaces.length) throw new Error('Duplicate dynamic surface identity.');
+    for (const s of surfaces.filter(s => sources.includes(s.source))) {
+      if (s.pointer !== 'none' || !s.sourceKey) throw new Error('Dynamic identity/passive invariant failed.');
+    }
+    await assertProtectedGeometry(page);
+    return surfaces;
+  };
+  const journey = async (on) => {
+    await clickSource(page, '#blue');
+    await clickSource(page, '#quantity'); await key(page, 'a', 'KeyA', 65, 2); await key(page, '2', 'Digit2', 50);
+    await clickSource(page, '#cart');
+    if (on) await current(['title','blue','cart','option','summary'], ['Standard finish selected','Your cart is empty']);
+    await clickSource(page, '#toggle');
+    if (on) await current(['terms']);
+    await clickSource(page, '#toggle');
+    if (on) await waitForCondition(() => getSurfaceSources(page), all => !all.includes('Free delivery with tracking'), 'attribute-only hide removes surface');
+    await evaluate(page, 'insertCore()');
+    if (on) await current(['late']);
+    await clickSource(page, '#route');
+    if (on) await current(['title'], ['Travel camera collection']);
+    await evaluate(page, 'history.back()');
+    await waitForCondition(() => evaluate(page, 'location.hash'), hash => hash === '', 'history back');
+    if (on) await current(['title'], ['Travel accessories collection']);
+    await evaluate(page, 'history.forward()');
+    await waitForCondition(() => evaluate(page, 'location.hash'), hash => hash === '#accessories', 'history forward');
+    if (on) await current(['title'], ['Travel camera collection']);
+    const result = await state();
+    if (JSON.stringify(result.events) !== JSON.stringify({option:1, quantity:1, cart:1, toggle:2, route:1, untrusted:0}) ||
+      result.quantity !== '2' || result.selected !== 'true' || result.focus !== 'route' || result.price !== 'USD 258' ||
+      result.note !== 'Private delivery note' || result.count !== 'Quantity: 2') throw new Error(`Dynamic input failed: ${JSON.stringify(result)}`);
+    return result;
+  };
+  await load(); const off = await journey(false);
+  await load(); translationTexts.length = 0;
+  await waitForCondition(() => setReader(true).then(() => true).catch(() => false), Boolean, 'dynamic activation');
+  await current(['title','blue','cart','option','summary']);
+  // More than the active budget: the bottom source must be discovered by nested wheel input.
+  if ((await getSurfaceSources(page)).includes('Catalog information paragraph 179')) throw new Error('Nested discovery precondition failed.');
+  const point = await evaluate(page, `(() => { const r = scroller.getBoundingClientRect(); return {x:r.left+100,y:r.top+40}; })()`);
+  const windowY = await evaluate(page, 'scrollY');
+  await page.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...point, deltaX:0, deltaY:8000});
+  await waitForCondition(() => evaluate(page, 'scroller.scrollTop'), top => top > 7000, 'trusted nested wheel reaches new content');
+  const wheelSurfaces = await current(['last']);
+  const clip = await evaluate(page, `(() => { const r=scroller.getBoundingClientRect(); return {left:r.left+scroller.clientLeft,top:r.top+scroller.clientTop,right:r.left+scroller.clientLeft+scroller.clientWidth,bottom:r.top+scroller.clientTop+scroller.clientHeight}; })()`);
+  if (await evaluate(page, 'scrollY') !== windowY || wheelSurfaces.filter(s => !s.hidden && s.source.startsWith('Catalog')).some(s =>
+    s.rect.left < clip.left || s.rect.right > clip.right || s.rect.top < clip.top || s.rect.bottom > clip.bottom)) throw new Error('Nested clip/window position failed.');
+  await page.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...point, deltaX:0, deltaY:-8000});
+  await waitForCondition(() => evaluate(page, 'scroller.scrollTop'), top => top === 0, 'nested wheel returns');
+  await waitForCondition(() => renderingSurfaces(page), all => !all.some(s => s.source === 'Catalog information paragraph 179' && !s.hidden), 'no fixed old scroll surface');
+  const on = await journey(true);
+  if (JSON.stringify(off) !== JSON.stringify(on)) throw new Error(`Dynamic OFF/ON mismatch: ${JSON.stringify({off,on})}`);
+  const leaked = translationTexts.filter(text => !dynamicTranslations[text] && !/^Catalog information paragraph \d+$/.test(text));
+  if (leaked.length || new Set(translationTexts).size !== translationTexts.length) throw new Error(`Dynamic protected requests or duplicate work: ${JSON.stringify({leaked, texts:translationTexts})}`);
+  await waitForCondition(() => evaluate(page, `JSON.parse(document.querySelector('[data-context-reader-root]').dataset.translationProgress)`),
+    progress => progress.completed === progress.total, 'dynamic queue settled', 100);
+  const titleBefore = (await renderingSurfaces(page)).find(s => s.source === 'Travel accessories collection');
+  heldDynamicTexts.add('Superseded camera details');
+  await evaluate(page, `document.getElementById('title').textContent = 'Superseded camera details'`);
+  await waitForCondition(() => pendingTranslations.find(p => p.request?.text === 'Superseded camera details'), Boolean, 'held reused source');
+  await evaluate(page, `document.getElementById('title').textContent = 'Current replacement camera'`);
+  const replaced = await current(['title'], ['Superseded camera details','Travel accessories collection']);
+  const titleAfter = replaced.find(s => s.source === 'Current replacement camera');
+  if (titleAfter.regionId !== titleBefore.regionId || titleAfter.sourceKey === titleBefore.sourceKey) throw new Error('Reused element lost identity or retained old source key.');
+  const progressBeforeLate = await evaluate(page, `document.querySelector('[data-context-reader-root]').dataset.translationProgress`);
+  pendingTranslations.find(p => p.request?.text === 'Superseded camera details').resolve();
+  await delay(350);
+  await current(['title'], ['Superseded camera details']);
+  if (await evaluate(page, `document.querySelector('[data-context-reader-root]').dataset.translationProgress`) !== progressBeforeLate) throw new Error('Late source response changed current diagnostics.');
+  await evaluate(page, `document.getElementById('late').remove()`);
+  await waitForCondition(() => getSurfaceSources(page), all => !all.includes('Returns include protective packaging'), 'removed core surface');
+  for (let cycle = 0; cycle < 10; cycle++) {
+    const source = `Dynamic camera cycle ${cycle}`;
+    dynamicTranslations[source] = `현재 카메라 ${cycle}`;
+    heldDynamicTexts.add(source);
+    await evaluate(page, `document.getElementById('title').textContent = ${JSON.stringify(source)}`);
+    await setReader(true);
+    await waitForCondition(() => pendingTranslations.find(p => p.request?.text === source), Boolean, `pending dynamic cycle ${cycle}`);
+    await evaluate(page, `document.getElementById('panel').setAttribute('aria-expanded', '${cycle % 2 === 0}')`);
+    const wheelPoint = await evaluate(page, `(() => {const r=scroller.getBoundingClientRect(); return {x:r.left+100,y:r.top+40};})()`);
+    await page.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...wheelPoint, deltaX:0, deltaY:cycle % 2 ? -40 : 40});
+    await setReader(false);
+    const countBefore = translationTexts.length;
+    pendingTranslations.find(p => p.request?.text === source)[cycle % 2 ? 'reject' : 'resolve']();
+    await delay(350);
+    if (await evaluate(page, `document.querySelectorAll('[data-context-reader-root]').length`) !== 0 ||
+      (await getSurfaceSources(page)).length || translationTexts.length !== countBefore) throw new Error(`Dynamic OFF left UI or work in cycle ${cycle}.`);
+  }
+  heldDynamicTexts.clear();
+  await setReader(true);
+  await current(['title','option','cart','summary'], ['Superseded camera details','Current replacement camera', ...Array.from({length:9}, (_,i) => `Dynamic camera cycle ${i}`)]);
+  if (!await evaluate(page, `document.querySelectorAll('[data-context-reader-root]').length === 1 && document.querySelector('[data-context-reader-root]').shadowRoot === null`)) throw new Error('Dynamic single closed host failed.');
+  const finalState = await state();
+  await setReader(false);
+  if (JSON.stringify(await state()) !== JSON.stringify(finalState)) throw new Error('Dynamic OFF reverted source state.');
+  console.log('Dynamic continuity passed: nested wheel discovery/clip, delayed insertion/removal, reused title and reversed responses, attribute-only terms, trusted option/quantity/cart, history back/forward, unique requests and ten dynamic pending ON/OFF cycles.');
+}
+
 const fixture = await readFile("test-pages/fixture.html");
-const server = createServer((_request, response) => {
+const targetingFixture = await readFile("test-pages/targeting-safety.html");
+const renderingFixture = await readFile("test-pages/adaptive-rendering.html");
+const dynamicFixture = await readFile("test-pages/dynamic-continuity.html");
+const server = createServer((request, response) => {
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(fixture);
+  response.end(request.url === "/dynamic" ? dynamicFixture : request.url === "/targeting" ? targetingFixture : request.url === "/rendering" ? renderingFixture : fixture);
 });
 let recordedContext;
 let rejectTranslations = true;
@@ -388,8 +757,10 @@ let holdInterpretations = false;
 let holdTranslations = false;
 const pendingInterpretations = [];
 const pendingTranslations = [];
-function hold(queue) {
-  const entry = { settled: false };
+const translationTexts = [];
+const heldDynamicTexts = new Set();
+function hold(queue, request) {
+  const entry = { settled: false, request };
   queue.push(entry);
   return new Promise((resolve, reject) => {
     entry.resolve = resolve;
@@ -407,19 +778,20 @@ const interpretationServer = createServer(createInterpretationHandler({ allowedO
     return mockProvider.interpret(context, options);
   },
   async translate(request, options) {
-    if (holdTranslations) await hold(pendingTranslations);
+    translationTexts.push(request.text);
+    if (holdTranslations || heldDynamicTexts.has(request.text)) await hold(pendingTranslations, request);
     if (rejectTranslations) {
       translationFailures += 1;
       throw new Error("Deterministic transient translation failure.");
     }
     const result = await mockProvider.translate(request, options);
     translationSuccesses += 1;
-    return result;
+    return dynamicTranslations[request.text] ?? (/^Catalog information paragraph \d+$/.test(request.text) ? '상품 안내' : renderingTranslations[request.text]) ?? (request.text === 'Express delivery' ? '빠른 배송을 선택하면 상품을 안전하게 포장하여 가능한 한 신속하게 배송해 드립니다.' : result);
   },
 },
   // Keep intentional outage/recovery independent from the production-default
   // rate limit, which has its own backend coverage.
-  rateLimitPerMinute: 200,
+  rateLimitPerMinute: 1000,
   logger: { error() {} },
 }));
 await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
@@ -510,7 +882,10 @@ try {
 
   const tabId = await evaluate(worker, `chrome.tabs.query({}).then(tabs => tabs.find(tab => tab.url === ${JSON.stringify(pageUrl)})?.id)`);
   if (!tabId) throw new Error("Fixture tab was not visible to the extension service worker.");
-  const setReader = (enabled) => evaluate(worker, `chrome.tabs.sendMessage(${tabId}, {type:"SET_READER_ENABLED", enabled:${enabled}})`);
+  // Mirror the toolbar's persisted state so a new content script's asynchronous
+  // GET_READER_STATE cannot overwrite the test's explicit activation.
+  const setReader = (enabled) => evaluate(worker, `chrome.storage.session.set({['reader:' + ${tabId}]: ${enabled}})
+    .then(() => chrome.tabs.sendMessage(${tabId}, {type:"SET_READER_ENABLED", enabled:${enabled}}))`);
   await evaluate(worker, `chrome.storage.local.set({
     interpretationProvider: { endpoint: ${JSON.stringify(interpretationUrl)} },
     translationProvider: { endpoint: ${JSON.stringify(translationUrl)} }
@@ -788,6 +1163,10 @@ try {
       await evaluate(page, `document.querySelectorAll("[data-context-reader-root]").length`) !== 0) {
     throw new Error("Reader OFF retained work registrations.");
   }
+
+  await dynamicJourney(page, setReader, pageUrl);
+  await targetingJourney(page, setReader, pageUrl);
+  await renderingJourney(page, setReader, pageUrl);
 
   page.close();
   worker.close();

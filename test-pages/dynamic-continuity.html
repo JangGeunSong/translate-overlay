@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Dynamic continuity fixture</title>
+<style>
+body { margin: 24px; font: 18px/1.5 Arial; background: white; color: #182c40; }
+main { width: 650px; } h1 { font-size: 24px; margin: 8px 0; }
+button, input { font: inherit; margin: 4px; } button { padding: 6px 12px; }
+p { margin: 8px 0; } #panel[aria-expanded="false"] p { display: none; }
+#scroller { height: 145px; overflow: auto; border: 1px solid #789; padding: 8px; }
+#scroller p { height: 40px; margin: 0; }
+#blue[aria-pressed="true"] { outline: 3px solid blue; }
+</style>
+<main id="source">
+<h1 id="title">Travel camera collection</h1>
+<button id="blue" aria-pressed="false">Select blue finish</button>
+<input id="quantity" data-protected type="number" min="1" value="1" aria-label="Quantity">
+<button id="cart">Add selected camera</button>
+<p id="option">Standard finish selected</p>
+<p><span id="price" data-protected>USD 129</span> <span id="count" data-protected>Quantity: 1</span></p>
+<p id="summary">Your cart is empty</p>
+<div id="note" contenteditable="true" data-protected>Private delivery note</div>
+<button id="toggle">Show delivery terms</button><button id="route">View accessories</button>
+<div id="panel" aria-expanded="false"><p id="terms">Free delivery with tracking</p></div>
+<div id="delayed"></div>
+<div id="scroller" tabindex="0"></div>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+window.dynamicEvents = {option:0, quantity:0, cart:0, toggle:0, route:0, untrusted:0};
+window.dynamicMutations = [];
+function count(event, name) { dynamicEvents[name]++; if (!event.isTrusted) dynamicEvents.untrusted++; }
+byId('blue').onclick = e => { count(e, 'option'); byId('blue').setAttribute('aria-pressed', 'true'); byId('option').textContent = 'Blue finish selected'; };
+byId('quantity').oninput = e => { count(e, 'quantity'); byId('count').textContent = 'Quantity: ' + e.target.value; };
+byId('cart').onclick = e => { count(e, 'cart'); byId('summary').textContent = 'Camera ready in your cart'; byId('price').textContent = 'USD 258'; };
+byId('toggle').onclick = e => { count(e, 'toggle'); const panel = byId('panel'); panel.setAttribute('aria-expanded', String(panel.getAttribute('aria-expanded') !== 'true')); };
+function renderRoute() { byId('title').textContent = location.hash ? 'Travel accessories collection' : 'Travel camera collection'; }
+byId('route').onclick = e => { count(e, 'route'); history.pushState({}, '', '#accessories'); renderRoute(); };
+onpopstate = renderRoute;
+window.insertCore = () => new Promise(resolve => setTimeout(() => { byId('delayed').innerHTML = '<p id="late">Returns include protective packaging</p>'; resolve(); }, 80));
+for (let i=0; i<180; i++) { const p = document.createElement('p'); p.textContent = 'Catalog information paragraph ' + i; byId('scroller').append(p); }
+byId('scroller').lastElementChild.id = 'last';
+new MutationObserver(records => dynamicMutations.push(...records.map(r => ({type:r.type, target:r.target.id || r.target.parentElement?.id, attribute:r.attributeName}))))
+  .observe(byId('source'), {subtree:true, childList:true, characterData:true, attributes:true});
+</script></html>

@@ -49,7 +49,7 @@ describe("non-destructive overlay invariant", () => {
     renderer.dispose();
   });
 
-  it("bounds a long translation to the source rectangle", () => {
+  it("keeps the original when text geometry cannot be measured", () => {
     const paragraph = document.querySelector("p")!;
     const renderer = new OverlayRenderer(() => undefined);
     const region = { id: "long", sourceKey: "long-source", element: paragraph, text: "Short source", language: "en" as const, semanticClass: "READING" as const, viewportBand: "VIEWPORT" as const, translationPriority: 0, rect: paragraph.getBoundingClientRect() };
@@ -63,9 +63,8 @@ describe("non-destructive overlay invariant", () => {
       }]]),
     );
     expect(renderer.getSurfaceDiagnostics()[0]).toMatchObject({
-      height: "40px",
-      maxHeight: "40px",
-      hidden: false,
+      hidden: true,
+      suppressed: true,
     });
     renderer.dispose();
   });

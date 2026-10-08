@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Transaction and editable targeting fixture</title>
+  <style>
+    body { max-width: 720px; margin: 80px auto; font: 18px/1.5 system-ui; }
+    p { margin: 10px 0; }
+    .row { display: flex; align-items: center; gap: 24px; }
+    .row > span:first-child { display: inline-block; min-width: 160px; }
+    input, select, textarea, [contenteditable], [role="textbox"] { font: inherit; }
+    input, select, textarea { width: 260px; }
+    [contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"] { border: 1px solid #888; padding: 6px; }
+    button { font: inherit; margin: 8px 12px 8px 0; padding: 8px; }
+    .variants { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  </style>
+</head>
+<body>
+  <main id="source">
+    <h1>Travel camera 2026 with 2 lenses</h1>
+    <p>Use 2 batteries for up to 12 hours.</p>
+    <p class="row"><span>Price</span><span id="price" data-protected>USD 129</span></p>
+    <p class="row"><span>Quantity</span><span id="quantity-value" data-protected>数量 2</span></p>
+    <p class="row"><span>SKU</span><span data-protected>AB12</span></p>
+    <p class="row"><span>Order number</span><span data-protected>ZX123</span></p>
+    <label class="row"><span>Search products</span><input id="search" value="" data-protected></label>
+    <label class="row"><span>Select color</span><select id="color" data-protected><option>Blue</option><option>Red</option></select></label>
+    <label class="row"><span>Choose quantity</span><input id="quantity" type="number" min="1" value="2" data-protected></label>
+    <p class="row"><span>Delivery note</span><span id="note" contenteditable="plaintext-only" data-protected>Private editable note</span></p>
+    <button id="cart">Add to cart</button><button>Select blue</button>
+    <p id="cart-state" data-protected>Quantity: 0</p>
+    <div class="variants">
+      <p data-protected>US $ 1,299.99</p><p data-protected>129,50 EUR</p><p data-protected>￥１２９</p>
+      <p data-protected>KRW&nbsp;129,000</p><p data-protected>EUR&#8239;1 299,50</p><p data-protected>129 dollars</p>
+      <p data-protected>2 pcs</p><p data-protected>数量：２件</p><p data-protected>SKU: AB-12</p>
+      <p data-protected>Order number AB123</p><p data-protected>价格：129元</p><p data-protected>CHF 1’299.00</p>
+    </div>
+    <p data-protected>Price: <b>USD 159</b> Quantity: <b>2</b></p>
+    <p data-protected>Price: USD 179 Quantity: 2</p>
+    <p class="row"><span>Gift message</span><textarea data-protected>Private textarea</textarea></p>
+    <div contenteditable="true">
+      <p data-protected><b>Inherited private draft</b></p>
+      <p contenteditable="false">Read only help</p>
+      <div contenteditable="false"><p contenteditable="true" data-protected>Nested private draft</p></div>
+    </div>
+    <p class="row"><span>Custom note</span><span role="textbox" tabindex="0" data-protected>Private custom draft</span></p>
+    <p id="reused">Current delivery information</p>
+    <p id="attribute-reused">Current return information</p>
+    <p id="role-reused">Current shipping information</p>
+    <p id="mixed-reused">Current gift information</p>
+    <button id="protect">Update transaction state</button>
+  </main>
+  <script>
+    window.commerceEvents = { search: 0, color: 0, quantity: 0, note: 0, cart: 0, protect: 0, untrusted: 0 };
+    const count = (name, event) => { commerceEvents[name]++; if (!event.isTrusted) commerceEvents.untrusted++; };
+    document.querySelector('#search').addEventListener('input', event => count('search', event));
+    document.querySelector('#color').addEventListener('change', event => {
+      count('color', event); document.querySelector('#price').textContent = 'USD 149';
+    });
+    document.querySelector('#quantity').addEventListener('input', event => {
+      count('quantity', event); document.querySelector('#quantity-value').textContent = '数量 ' + event.target.value;
+    });
+    document.querySelector('#note').addEventListener('input', event => count('note', event));
+    document.querySelector('#cart').addEventListener('click', event => {
+      count('cart', event); document.querySelector('#cart-state').textContent = 'Quantity: ' + document.querySelector('#quantity').value;
+    });
+    document.querySelector('#protect').addEventListener('click', event => {
+      count('protect', event);
+      document.querySelector('#reused').textContent = 'USD 299';
+      document.querySelector('#attribute-reused').setAttribute('contenteditable', 'true');
+      document.querySelector('#role-reused').setAttribute('role', 'textbox');
+      document.querySelector('#mixed-reused').innerHTML = '<span>Delivery fee</span> <span data-protected>USD 15</span> <span contenteditable="true" data-protected>Private mixed draft</span>';
+    });
+  </script>
+</body>
+</html>

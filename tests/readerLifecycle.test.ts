@@ -195,25 +195,83 @@ describe("reader selection and activation lifecycle", () => {
     })));
     await vi.advanceTimersByTimeAsync(50);
     expect(shadow.querySelector(".translation-surface")?.textContent).toBe("Current replacement");
+    const completed = controller.getDiagnostics().translationCompleted;
     // Finish the superseded and removed sources after the replacement.
     completeTranslations();
     await vi.advanceTimersByTimeAsync(50);
     const surfaces = [...shadow.querySelectorAll<HTMLElement>(".translation-surface")];
     expect(surfaces.map((surface) => surface.dataset.sourceText)).toEqual(["Replacement source paragraph for translation."]);
+    expect(controller.getDiagnostics().translationCompleted).toBe(completed);
+  });
+
+  it("discovers nested scroll roots without requiring window scroll or a document scan", async () => {
+    const analyze = vi.spyOn(PageAnalyzer.prototype, "analyze");
+    const main = document.querySelector("main")!;
+    for (let i = 0; i < 8; i++) {
+      main.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(80);
+    }
+    await vi.advanceTimersByTimeAsync(200);
+    expect(analyze.mock.calls.some(([options]) => options?.roots?.includes(main))).toBe(true);
+    expect(analyze.mock.calls.every(([options]) => options?.roots !== undefined)).toBe(true);
+    expect(controller.getDiagnostics().reconciliations).toBeLessThanOrEqual(3);
+  });
+
+  it("observes bounded semantic attributes but ignores unrelated metadata", async () => {
+    const a = document.getElementById("a")!;
+    a.setAttribute("aria-expanded", "true");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(controller.getDiagnostics().mutationBatches).toBe(1);
+    a.setAttribute("data-analytics", "changed");
+    await vi.advanceTimersByTimeAsync(150);
+    expect(controller.getDiagnostics().mutationBatches).toBe(1);
+  });
+
+  it("ignores stale translation failures and latency after the current source succeeds", async () => {
+    await flush();
+    const old = [...translations];
+    document.getElementById("a")!.textContent = "Current source details for the camera.";
+    document.getElementById("b")!.remove();
+    await vi.advanceTimersByTimeAsync(150);
+    const current = translations.at(-1)!;
+    current.pending.resolve(current.requests.map(request => ({regionId: request.regionId,
+      requestKey: request.requestKey, translatedText: "Current", provider: "fake"})));
+    await vi.advanceTimersByTimeAsync(50);
+    const before = controller.getDiagnostics();
+    old.forEach(({pending}) => pending.reject(new Error("Superseded source")));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(controller.getDiagnostics()).toEqual(before);
+    expect(shadow.querySelector(".translation-surface")?.textContent).toBe("Current");
   });
 
   it("leaves no UI or duplicate work after ten pending ON/OFF cycles", async () => {
+    controller.setEnabled(false);
+    const addWindow = vi.spyOn(window, "addEventListener");
+    const removeWindow = vi.spyOn(window, "removeEventListener");
+    const addDocument = vi.spyOn(document, "addEventListener");
+    const removeDocument = vi.spyOn(document, "removeEventListener");
+    const mutationObservers = new Set<MutationObserver>();
+    const NativeObserver = window.MutationObserver;
+    vi.stubGlobal("MutationObserver", class extends NativeObserver {
+      observe(target: Node, options?: MutationObserverInit) { mutationObservers.add(this); super.observe(target, options); }
+      disconnect() { mutationObservers.delete(this); super.disconnect(); }
+    });
     const retired: ShadowRoot[] = [];
     for (let index = 0; index < 10; index++) {
       controller.setEnabled(true);
       expect(document.querySelectorAll("[data-context-reader-root]")).toHaveLength(1);
       await request(index % 2 ? "b" : "a");
+      document.getElementById("a")!.textContent = `Alpha source in dynamic cycle ${index}.`;
+      document.querySelector("main")!.setAttribute("aria-expanded", String(index % 2 === 0));
+      document.querySelector("main")!.dispatchEvent(new Event("scroll"));
+      await flush(); // leave mutation/scroll reconciliation scheduled at shutdown
       select(index % 2 ? "a" : "b"); // queued action at shutdown
       retired.push(shadow);
       controller.setEnabled(false);
       expect(document.querySelectorAll("[data-context-reader-root]")).toHaveLength(0);
       expect(observers.size).toBe(0);
       expect(subscriptions).toBe(0);
+      expect(mutationObservers.size).toBe(0);
     }
     const html = retired.map((root) => root.innerHTML);
     const metrics = controller.getDiagnostics();
@@ -229,6 +287,16 @@ describe("reader selection and activation lifecycle", () => {
     expect(document.querySelectorAll("[data-context-reader-root]")).toHaveLength(0);
     expect(controller.getDiagnostics()).toEqual(metrics);
     expect(vi.getTimerCount()).toBe(0);
+    for (const [added, removed, names] of [
+      [addWindow, removeWindow, ["scroll", "resize", "popstate", "hashchange"]],
+      [addDocument, removeDocument, ["mouseup", "selectionchange"]],
+    ] as const) for (const name of names) {
+      const registrations = added.mock.calls.filter(([type]) => type === name);
+      const removals = removed.mock.calls.filter(([type]) => type === name);
+      expect(registrations).toHaveLength(10);
+      expect(removals).toHaveLength(10);
+      expect(registrations.map(([, listener]) => listener)).toEqual(removals.map(([, listener]) => listener));
+    }
     controller.setEnabled(true);
     await request("b");
     expect(interpretations).toHaveLength(11);

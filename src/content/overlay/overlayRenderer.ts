@@ -5,6 +5,7 @@ import type {
   TranslationProgress,
   TranslationResult,
 } from "../types";
+import { containsBox, measureSurface } from "./surfaceLayout";
 
 const ROOT_ATTRIBUTE = "data-context-reader-root";
 
@@ -68,14 +69,11 @@ export class OverlayRenderer {
       .surface-layer, .control-layer { position: fixed; inset: 0; pointer-events: none; }
       .surface-layer { overflow: hidden; }
       .translation-surface {
-        position: absolute; box-sizing: border-box; overflow: hidden; padding: 1px 2px;
-        background: color-mix(in srgb, Canvas 96%, transparent); color: CanvasText;
-        white-space: normal; overflow-wrap: anywhere; word-break: keep-all; border-radius: 2px;
+        position: absolute; box-sizing: border-box; overflow: hidden; padding: 0;
+        white-space: normal; overflow-wrap: anywhere; word-break: normal;
         pointer-events: none; contain: layout paint style;
       }
-      .translation-surface.compact { white-space: nowrap; text-overflow: ellipsis; }
-      .translation-surface.semantic-ui { white-space: nowrap; text-overflow: ellipsis; }
-      .translation-surface.semantic-auxiliary { opacity: .92; }
+      .translation-surface.compact { white-space: nowrap; }
       .translation-surface.demo { outline: 1px dotted color-mix(in srgb, CanvasText 28%, transparent); }
       .toolbar {
         position: fixed; top: 12px; right: 12px; display: flex; align-items: center; gap: 8px;
@@ -127,6 +125,7 @@ export class OverlayRenderer {
     toggle.addEventListener("click", () => {
       this.showingOriginal = !this.showingOriginal;
       this.surfaceLayer.hidden = this.showingOriginal;
+      if (!this.showingOriginal) this.reposition();
       toggle.textContent = this.showingOriginal ? "번역 보기" : "원문 보기";
       onToggleOriginal(this.showingOriginal);
     });
@@ -242,7 +241,7 @@ export class OverlayRenderer {
   }
 
   private position(entry: SurfaceEntry): void {
-    if (!entry.region.element.isConnected) {
+    if (this.showingOriginal || !entry.region.element.isConnected) {
       entry.element.hidden = true;
       return;
     }
@@ -259,23 +258,52 @@ export class OverlayRenderer {
     entry.element.dataset.suppressed = String(suppressTinyUi);
     entry.element.hidden = !visible || suppressTinyUi;
     if (!visible || suppressTinyUi) return;
+    const measurement = measureSurface(entry.region.element);
+    if ("reason" in measurement) {
+      entry.element.hidden = true;
+      entry.element.dataset.suppressed = "true";
+      entry.element.dataset.suppressionReason = measurement.reason;
+      return;
+    }
+    const { box, background } = measurement;
     const sourceFontSize = Number.parseFloat(style.fontSize) || 16;
-    const translatedLength = entry.element.textContent?.length ?? 0;
-    const density = translatedLength / Math.max(1, entry.region.text.length);
-    const fontScale = density > 1.35 ? Math.max(0.78, 1 / Math.sqrt(density)) : 1;
-    const compact = entry.region.semanticClass === "UI" || rect.height < 22 || rect.width < 90;
+    const heading = entry.region.element.matches("h1, h2, h3, h4, h5, h6") ||
+      Boolean(entry.region.element.closest("h1, h2, h3, h4, h5, h6"));
+    const compact = !heading && entry.region.semanticClass === "UI" && box.height < sourceFontSize * 1.8;
+    entry.element.dataset.renderingPolicy = heading ? "title" : compact ? "compact" : "wrapped";
     entry.element.classList.toggle("compact", compact);
     Object.assign(entry.element.style, {
-      transform: `translate(${Math.round(rect.left)}px, ${Math.round(rect.top)}px)`,
-      width: `${Math.max(1, Math.round(rect.width))}px`,
-      height: `${Math.max(1, Math.round(rect.height))}px`,
-      maxHeight: `${Math.max(1, Math.round(rect.height))}px`,
+      transform: `translate(${box.left}px, ${box.top}px)`,
+      width: `${box.width}px`,
+      height: `${box.height}px`,
+      maxHeight: `${box.height}px`,
+      backgroundColor: background,
+      color: style.color,
       fontFamily: style.fontFamily,
-      fontSize: `${Math.max(10, sourceFontSize * fontScale * (entry.region.semanticClass === "UI" ? 0.9 : 1))}px`,
       fontWeight: style.fontWeight,
-      lineHeight: style.lineHeight,
+      fontStyle: style.fontStyle,
+      letterSpacing: style.letterSpacing,
+      direction: style.direction,
       textAlign: style.textAlign,
     });
+    // Fit the entire translation with a bounded reduction. Hidden overflow or a title
+    // attribute is not readable completion; if no size fits, keep the original.
+    const minimum = Math.min(sourceFontSize, Math.max(12, sourceFontSize * 0.8));
+    let fits = false;
+    const range = document.createRange();
+    for (let step = 0; step <= 4; step++) {
+      const size = sourceFontSize - (sourceFontSize - minimum) * step / 4;
+      entry.element.style.fontSize = `${size}px`;
+      entry.element.style.lineHeight = `${Math.min(box.height, size * 1.25)}px`;
+      range.selectNodeContents(entry.element);
+      const lines = [...range.getClientRects()];
+      fits = lines.length > 0 && entry.element.scrollWidth <= entry.element.clientWidth && entry.element.scrollHeight <= entry.element.clientHeight &&
+        lines.every(line => containsBox(box, line));
+      if (fits) break;
+    }
+    entry.element.hidden = !fits;
+    entry.element.dataset.suppressed = String(!fits);
+    entry.element.dataset.suppressionReason = fits ? "" : "translation-overflow";
   }
 
   showSelectionAction(rect: DOMRect, onRequest: () => void): void {
